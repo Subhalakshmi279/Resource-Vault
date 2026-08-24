@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Image as ImageIcon, Trash2 } from 'lucide-react';
 import type { Resource, AreaType, ResourceType } from '../types';
 import { PixelAlert } from './PixelIcons';
+import { Input } from './Input';
 
 
 
@@ -31,7 +32,6 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
   const [newTopicText, setNewTopicText] = useState('');
 
   const [type, setType] = useState<ResourceType>('website');
-  const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [filePath, setFilePath] = useState<string | undefined>(undefined);
@@ -116,13 +116,6 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
     }
   }, [editingResource, isOpen]);
 
-  // Set type photo on file load
-  useEffect(() => {
-    if (filePath && type !== 'photo') {
-      setType('photo');
-    }
-  }, [filePath]);
-
   if (!isOpen) return null;
 
   const handleUrlChange = (newUrl: string) => {
@@ -132,15 +125,14 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
   };
 
   const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      alert('Please upload an image file (PNG, JPG, WebP, etc.)');
+    if (file.size > 1.5 * 1024 * 1024) {
+      alert('File size exceeds 1.5MB limit. Please upload a smaller file.');
       return;
     }
     const reader = new FileReader();
     reader.onload = (e) => {
       if (e.target?.result) {
         setFilePath(e.target.result as string);
-        setType('photo');
       }
     };
     reader.readAsDataURL(file);
@@ -172,28 +164,7 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ',') {
-      e.preventDefault();
-      const val = tagInput.trim().toLowerCase().replace(/,/g, '');
-      if (val && !tags.includes(val)) {
-        setTags([...tags, val]);
-      }
-      setTagInput('');
-    }
-  };
 
-  const handleTagBlur = () => {
-    const val = tagInput.trim().toLowerCase().replace(/,/g, '');
-    if (val && !tags.includes(val)) {
-      setTags([...tags, val]);
-    }
-    setTagInput('');
-  };
-
-  const removeTag = (indexToRemove: number) => {
-    setTags(tags.filter((_, index) => index !== indexToRemove));
-  };
 
   // Submit and Validate
   const handleSubmit = (e: React.FormEvent) => {
@@ -255,46 +226,39 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
       <div className="modal-sheet">
         <div className="modal-sheet-header">
           <span className="modal-sheet-title">
-            {editingResource ? 'edit_resource.exe' : 'add_resource.exe'}
+            {editingResource ? 'Edit Resource' : 'Add Resource'}
           </span>
-          <div className="window-controls" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-            <span className="window-dot min"></span>
-            <span className="window-dot max"></span>
-            <button 
-              type="button" 
-              className="window-dot close" 
-              onClick={onClose} 
-              style={{ padding: 0, width: '12px', height: '12px', cursor: 'pointer' }}
-              title="Close window"
-            />
-          </div>
+          <button 
+            type="button" 
+            onClick={onClose} 
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}
+            title="Close"
+          >
+            <X size={20} color="#1A1A1A" strokeWidth={2} />
+          </button>
         </div>
         
         <form onSubmit={handleSubmit}>
           <div className="modal-sheet-body">
             
-            {/* Title field */}
             <div className="form-group-block">
               <label className="form-label-text" htmlFor="title">Title *</label>
-              <input
+              <Input
                 id="title"
                 type="text"
                 placeholder="React 19 Documentation"
-                className="form-input-field"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 required
               />
             </div>
 
-            {/* URL field */}
             <div className="form-group-block">
               <label className="form-label-text" htmlFor="url">URL</label>
-              <input
+              <Input
                 id="url"
                 type="url"
                 placeholder="https://react.dev"
-                className="form-input-field"
                 value={url}
                 onChange={(e) => handleUrlChange(e.target.value)}
               />
@@ -369,15 +333,13 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
               </div>
             </div>
 
-            {/* Create New Topic text box: visible if select === 'create_new' */}
             {topicSelection === 'create_new' && (
               <div className="form-group-block animate-fade" style={{ marginTop: '-0.5rem' }}>
                 <label className="form-label-text" htmlFor="new-topic-input">New Topic Name *</label>
-                <input
+                <Input
                   id="new-topic-input"
                   type="text"
                   placeholder="e.g. React, Resume, Startups"
-                  className="form-input-field"
                   value={newTopicText}
                   onChange={(e) => setNewTopicText(e.target.value)}
                   required
@@ -406,34 +368,6 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
               </select>
             </div>
 
-            {/* Tags chips manager */}
-            <div className="form-group-block">
-              <label className="form-label-text">Tags</label>
-              <div className="form-tag-chips-wrapper">
-                {tags.map((tag, idx) => (
-                  <span key={idx} className="form-tag-chip-item">
-                    #{tag}
-                    <button
-                      type="button"
-                      className="form-tag-chip-remove-btn"
-                      onClick={() => removeTag(idx)}
-                    >
-                      <X size={10} />
-                    </button>
-                  </span>
-                ))}
-                <input
-                  type="text"
-                  placeholder={tags.length === 0 ? "Type tag & press Enter" : ""}
-                  className="form-tag-chip-input-field"
-                  value={tagInput}
-                  onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onBlur={handleTagBlur}
-                />
-              </div>
-            </div>
-
             {/* Notes */}
             <div className="form-group-block">
               <label className="form-label-text" htmlFor="notes">Notes / Description</label>
@@ -446,70 +380,74 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
               />
             </div>
 
-            {/* Photo dropzone: only visible if type === Photo */}
-            {type === 'photo' && (
-              <div className="form-group-block" style={{ animation: 'fadeIn 0.2s ease-out' }}>
-                <label className="form-label-text">Upload Reference Photo *</label>
-                {!filePath ? (
-                  <div
-                    className={`form-dropzone-box ${dragActive ? 'active' : ''}`}
-                    onDragEnter={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDragOver={handleDrag}
-                    onDrop={handleDrop}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <span className="form-dropzone-title">
-                      Drag and drop image here, or <strong>browse files</strong>
+            {/* General file/image upload dropzone (Always visible) */}
+            <div className="form-group-block" style={{ animation: 'fadeIn 0.2s ease-out' }}>
+              <label className="form-label-text">Upload File / Image</label>
+              {!filePath ? (
+                <div
+                  className={`form-dropzone-box ${dragActive ? 'active' : ''}`}
+                  onDragEnter={handleDrag}
+                  onDragLeave={handleDrag}
+                  onDragOver={handleDrag}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <span className="form-dropzone-title">
+                    Drag and drop file here, or <strong>browse files</strong>
+                  </span>
+                  <span className="form-dropzone-sub">
+                    Supports PNG, JPG, WebP, PDF, TXT (Max 1.5MB)
+                  </span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,application/pdf,text/plain"
+                    style={{ display: 'none' }}
+                    onChange={handleFileInputChange}
+                  />
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <div className="form-dropzone-preview-box">
+                    {filePath.startsWith('data:image/') ? (
+                      <img src={filePath} alt="Preview" className="form-dropzone-preview-image" />
+                    ) : (
+                      <div style={{ padding: '1rem', background: '#F3F4F6', border: '1.5px dashed #9CA3AF', borderRadius: '6px', textAlign: 'center', fontSize: '0.8rem', width: '100%' }}>
+                        📎 File Attachment Loaded
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="form-dropzone-preview-delete"
+                      onClick={() => setFilePath(undefined)}
+                      title="Remove file"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.75rem', color: '#0d9488', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                      <ImageIcon size={12} /> File attached
                     </span>
-                    <span className="form-dropzone-sub">
-                      Supports PNG, JPG, WebP
-                    </span>
+                    <button
+                      type="button"
+                      className="btn-ui btn-ui-secondary"
+                      style={{ fontSize: '0.7rem', padding: '0.2rem 0.4rem' }}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Change file
+                    </button>
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/*"
+                      accept="image/*,application/pdf,text/plain"
                       style={{ display: 'none' }}
                       onChange={handleFileInputChange}
                     />
                   </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    <div className="form-dropzone-preview-box">
-                      <img src={filePath} alt="Preview" className="form-dropzone-preview-image" />
-                      <button
-                        type="button"
-                        className="form-dropzone-preview-delete"
-                        onClick={() => setFilePath(undefined)}
-                        title="Remove image"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.75rem', color: '#0d9488', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-                        <ImageIcon size={12} /> Image attached
-                      </span>
-                      <button
-                        type="button"
-                        className="btn-ui btn-ui-secondary"
-                        style={{ fontSize: '0.7rem', padding: '0.2rem 0.4rem' }}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        Change image
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        style={{ display: 'none' }}
-                        onChange={handleFileInputChange}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="modal-sheet-footer">

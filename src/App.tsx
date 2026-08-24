@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
 import {
-  PixelHome,
-  PixelStar,
-  PixelHeart,
-  PixelBriefcase,
-  PixelLaptop,
-  PixelAlert,
-  PixelFolder,
-  PixelPlus,
-  PixelClose,
-  PixelArrow,
-  PixelLink
-} from './components/PixelIcons';
+  Home,
+  Heart,
+  Briefcase,
+  Laptop,
+  AlertCircle,
+  Folder,
+  Plus,
+  ArrowLeft,
+  Sparkles,
+  X,
+  ExternalLink,
+  ChevronRight,
+  Trash2,
+  Pencil
+} from 'lucide-react';
 import { ResourceForm } from './components/ResourceForm';
-import { ResourceCard } from './components/ResourceCard';
+import { Input } from './components/Input';
 import { INITIAL_RESOURCES } from './mockData';
 import type { Resource, AreaType, ResourceType } from './types';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
@@ -30,30 +33,104 @@ function App() {
   const [activeTopicString, setActiveTopicString] = useState<string | null>(null);
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
   
-  // Previous view tracking (for Back breadcrumb on details page)
-  const [previousView, setPreviousView] = useState<ViewType>('home');
-  const [previousArea, setPreviousArea] = useState<AreaType | null>(null);
-  const [previousTopicString, setPreviousTopicString] = useState<string | null>(null);
 
   // Filters State
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<ResourceType | 'all'>('all');
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [sortOrder, setSortOrder] = useState<'recent' | 'az'>('recent');
-
-  // Search Page specific filters
-  const [searchAreaFilter, setSearchAreaFilter] = useState<AreaType | 'all'>('all');
-  const [searchTypeFilter, setSearchTypeFilter] = useState<ResourceType | 'all'>('all');
-  const [searchTopicFilter, setSearchTopicFilter] = useState<string | 'all'>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'az' | 'za'>('newest');
 
   // Modal Control States
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingResource, setEditingResource] = useState<Resource | null>(null);
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
 
-  // Startup and Save Overlay States
-  const [isStartupLoading, setIsStartupLoading] = useState(true);
-  const [showSavePopup, setShowSavePopup] = useState(false);
+  // Table Selection & Pagination States
+  const [selectedResources, setSelectedResources] = useState<string[]>([]);
+  const [currentPageTopic, setCurrentPageTopic] = useState(1);
+  const [deletingMultipleResources, setDeletingMultipleResources] = useState(false);
+
+  // Recently Visited Subtopics State (Internal history tracking)
+  const [recentlyVisited, setRecentlyVisited] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('catalog_recently_visited');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [homePinnedIds, setHomePinnedIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('resourceVault_homePinnedIds');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [subtopicPinnedMap, setSubtopicPinnedMap] = useState<Record<string, string[]>>(() => {
+    try {
+      const saved = localStorage.getItem('resourceVault_subtopicPinnedMap');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Pin destination modal states
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [pinTargetResourceId, setPinTargetResourceId] = useState<string | null>(null);
+
+  // Bulk Move States
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const [moveToArea, setMoveToArea] = useState<AreaType | ''>('');
+  const [moveToSubtopic, setMoveToSubtopic] = useState<string>('');
+
+  useEffect(() => {
+    localStorage.setItem('catalog_recently_visited', JSON.stringify(recentlyVisited));
+  }, [recentlyVisited]);
+
+  useEffect(() => {
+    localStorage.setItem('resourceVault_homePinnedIds', JSON.stringify(homePinnedIds));
+  }, [homePinnedIds]);
+
+  useEffect(() => {
+    localStorage.setItem('resourceVault_subtopicPinnedMap', JSON.stringify(subtopicPinnedMap));
+  }, [subtopicPinnedMap]);
+
+  // Clean stale pin references if resources change or are deleted
+  useEffect(() => {
+    if (resources.length === 0) return;
+    const existingIds = new Set(resources.map(r => r.id));
+
+    setHomePinnedIds(prev => {
+      const filtered = prev.filter(id => existingIds.has(id));
+      if (filtered.length !== prev.length) {
+        return filtered;
+      }
+      return prev;
+    });
+
+    setSubtopicPinnedMap(prev => {
+      let mapChanged = false;
+      const nextMap: Record<string, string[]> = {};
+      Object.entries(prev).forEach(([topic, ids]) => {
+        const cleanedIds = ids.filter(id => existingIds.has(id));
+        if (cleanedIds.length !== ids.length) {
+          mapChanged = true;
+        }
+        if (cleanedIds.length > 0) {
+          nextMap[topic] = cleanedIds;
+        } else {
+          mapChanged = true;
+        }
+      });
+      if (mapChanged) {
+        return nextMap;
+      }
+      return prev;
+    });
+  }, [resources]);
 
   // 1. Initial Load: Seed mock data or fetch from Supabase
   useEffect(() => {
@@ -96,25 +173,15 @@ function App() {
           localStorage.setItem('catalog_resources', JSON.stringify(INITIAL_RESOURCES));
         }
       }
-      setIsStartupLoading(false);
     };
-
-    // Startup loading sequence delay (1.2 seconds)
-    const timer = setTimeout(() => {
-      loadResources();
-    }, 1200);
-    return () => clearTimeout(timer);
+    loadResources();
   }, []);
 
-  // 2. Global search handler (Real-time in-place search on Home view)
-  const handleGlobalSearchChange = (val: string) => {
-    setSearchQuery(val);
-  };
 
   const handleReturnFromSearch = () => {
-    setActiveView(previousView);
-    setActiveArea(previousArea);
-    setActiveTopicString(previousTopicString);
+    setActiveView('home');
+    setActiveArea(null);
+    setActiveTopicString(null);
     setSearchQuery('');
   };
 
@@ -206,12 +273,6 @@ function App() {
     setEditingResource(null);
     setIsFormOpen(false);
 
-    // Show self-dismissing Save popup overlay for 3 seconds
-    setShowSavePopup(true);
-    const saveTimer = setTimeout(() => {
-      setShowSavePopup(false);
-    }, 3000);
-    return () => clearTimeout(saveTimer);
   };
 
   // Delete Resource
@@ -236,17 +297,12 @@ function App() {
 
     setDeletingResourceId(null);
     if (selectedResource && selectedResource.id === id) {
-      handleGoBackFromDetail();
+      setSelectedResource(null);
     }
   };
 
   const handleOpenAddForm = () => {
     setEditingResource(null);
-    setIsFormOpen(true);
-  };
-
-  const handleOpenEditForm = (resource: Resource) => {
-    setEditingResource(resource);
     setIsFormOpen(true);
   };
 
@@ -257,18 +313,22 @@ function App() {
     setActiveTopicString(null);
     setSelectedResource(null);
     setSearchQuery('');
+    setSelectedType('all');
+    setSortOrder('newest');
+    setSelectedResources([]);
+    setCurrentPageTopic(1);
   };
-
-
 
   const handleGoToArea = (area: AreaType) => {
     setActiveArea(area);
     setActiveTopicString(null);
     setSelectedResource(null);
     setSelectedType('all');
-    setSelectedTag(null);
     setSearchQuery('');
+    setSortOrder('newest');
     setActiveView('area');
+    setSelectedResources([]);
+    setCurrentPageTopic(1);
   };
 
   const handleGoToTopic = (topicName: string, areaHint?: AreaType) => {
@@ -283,27 +343,93 @@ function App() {
     setActiveTopicString(topicName);
     setSelectedResource(null);
     setSelectedType('all');
-    setSelectedTag(null);
     setSearchQuery('');
+    setSortOrder('newest');
     setActiveView('topic');
+    setCurrentPageTopic(1);
+    setSelectedResources([]);
+
+    // Track recently visited subtopics
+    setRecentlyVisited(prev => {
+      const filtered = prev.filter(t => t !== topicName);
+      return [topicName, ...filtered].slice(0, 5);
+    });
   };
 
-  const handleOpenResourceDetail = (resource: Resource) => {
-    // Save breadcrumb state
-    setPreviousView(activeView);
-    setPreviousArea(activeArea);
-    setPreviousTopicString(activeTopicString);
-    
-    setSelectedResource(resource);
-    setActiveView('detail');
+  const handleToggleSelectRow = (id: string) => {
+    setSelectedResources(prev => 
+      prev.includes(id) ? prev.filter(rId => rId !== id) : [...prev, id]
+    );
   };
 
-  const handleGoBackFromDetail = () => {
-    setActiveView(previousView);
-    setActiveArea(previousArea);
-    setActiveTopicString(previousTopicString);
-    setSelectedResource(null);
+  const handleToggleSelectAll = (visibleItems: Resource[]) => {
+    const visibleIds = visibleItems.map(item => item.id);
+    const allSelected = visibleIds.every(id => selectedResources.includes(id));
+    if (allSelected) {
+      setSelectedResources(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      setSelectedResources(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
   };
+
+  const handleConfirmDeleteMultiple = async () => {
+    if (selectedResources.length === 0) return;
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('resources')
+          .delete()
+          .in('id', selectedResources);
+        if (error) throw error;
+      }
+      setResources(prev => prev.filter(res => !selectedResources.includes(res.id)));
+      setSelectedResources([]);
+      setDeletingMultipleResources(false);
+    } catch (err) {
+      console.error("Error deleting multiple resources:", err);
+    }
+  };
+
+  const handleConfirmMoveSelected = async () => {
+    if (selectedResources.length === 0 || !moveToArea || !moveToSubtopic.trim()) return;
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('resources')
+          .update({ area: moveToArea, topic: moveToSubtopic.trim() })
+          .in('id', selectedResources);
+        if (error) throw error;
+      }
+      setResources(prev => 
+        prev.map(res => 
+          selectedResources.includes(res.id) 
+            ? { ...res, area: moveToArea, topic: moveToSubtopic.trim() } 
+            : res
+        )
+      );
+      setSelectedResources([]);
+      setIsMoveModalOpen(false);
+      
+      // Track newly created subtopic in recently visited automatically
+      setRecentlyVisited(prev => {
+        const filtered = prev.filter(t => t !== moveToSubtopic.trim());
+        return [moveToSubtopic.trim(), ...filtered].slice(0, 5);
+      });
+    } catch (err) {
+      console.error("Error moving multiple resources:", err);
+    }
+  };
+
+  const handleEditSelected = () => {
+    if (selectedResources.length !== 1) return;
+    const target = resources.find(res => res.id === selectedResources[0]);
+    if (target) {
+      setEditingResource(target);
+      setIsFormOpen(true);
+    }
+  };
+
+
 
   // Get resources for the current active list view (BEFORE tags, search, and type filters)
   const getBaseFilteredResources = () => {
@@ -328,120 +454,89 @@ function App() {
 
   const baseResources = getBaseFilteredResources();
 
-  // Apply search query, format type filter inside standard view lists
+  // Apply search query, type filter, and sort inside standard view lists
   const getContextFilteredResources = () => {
-    return baseResources.filter(res => {
-      // 1. Media Type Filter
-      if (selectedType !== 'all' && res.type !== selectedType) return false;
+    let list = baseResources;
 
-      // 2. Search filter query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesTitle = res.title.toLowerCase().includes(q);
+    // 1. Search filter query (searches title, description/notes, url/domain, type, area, subtopic)
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter(res => {
+        const matchesTitle = res.title ? res.title.toLowerCase().includes(q) : false;
         const matchesNotes = res.notes ? res.notes.toLowerCase().includes(q) : false;
-        const matchesTags = res.tags.some(t => t.toLowerCase().includes(q));
-        const matchesTopic = res.topic.toLowerCase().includes(q);
-        return matchesTitle || matchesNotes || matchesTags || matchesTopic;
-      }
+        const matchesDescription = res.description ? res.description.toLowerCase().includes(q) : false;
+        const matchesUrl = res.url ? res.url.toLowerCase().includes(q) : false;
+        const matchesType = res.type ? res.type.toLowerCase().includes(q) : false;
+        const matchesArea = res.area ? res.area.toLowerCase().includes(q) : false;
+        const matchesTopic = res.topic ? res.topic.toLowerCase().includes(q) : false;
+        return matchesTitle || matchesNotes || matchesDescription || matchesUrl || matchesType || matchesArea || matchesTopic;
+      });
+    }
 
-      return true;
-    });
+    // 2. Media Type Filter
+    if (selectedType !== 'all') {
+      list = list.filter(res => res.type === selectedType);
+    }
+
+    // 3. Sort Order
+    if (sortOrder === 'newest') {
+      list = [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    } else if (sortOrder === 'oldest') {
+      list = [...list].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    } else if (sortOrder === 'az') {
+      list = [...list].sort((a, b) => a.title.localeCompare(b.title));
+    } else if (sortOrder === 'za') {
+      list = [...list].sort((a, b) => b.title.localeCompare(a.title));
+    }
+
+    return list;
   };
 
-  const contextFiltered = getContextFilteredResources();
+  const finalListResources = getContextFilteredResources();
+  const searchResultsResources = finalListResources;
 
-  // Collect unique tag pills dynamically within the filtered subset
-  const availableTags = Array.from(
-    new Set(contextFiltered.flatMap(res => res.tags))
-  ).sort((a, b) => a.localeCompare(b));
 
-  // Reset tag if it falls out of active list context
-  useEffect(() => {
-    if (selectedTag && !availableTags.includes(selectedTag)) {
-      setSelectedTag(null);
-    }
-  }, [activeView, activeArea, activeTopicString, selectedType, searchQuery, resources]);
-
-  // Apply Tag pills filter & Sort Order
-  const getFinalList = () => {
-    let list = contextFiltered;
-    if (selectedTag) {
-      list = list.filter(res => res.tags.includes(selectedTag));
-    }
-    
-    // Sort
-    if (sortOrder === 'recent' || activeView === 'recent') {
-      return [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    } else {
-      return [...list].sort((a, b) => a.title.localeCompare(b.title));
-    }
-  };
-
-  const finalListResources = getFinalList();
-
-  // ----------------------------------------------------
-  // Search View Page: Complex matching list filters
-  // ----------------------------------------------------
-  const getSearchResultsList = () => {
-    return resources.filter(res => {
-      // Scoped search text
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesTitle = res.title.toLowerCase().includes(q);
-        const matchesNotes = res.notes ? res.notes.toLowerCase().includes(q) : false;
-        const matchesTags = res.tags.some(t => t.toLowerCase().includes(q));
-        const matchesTopic = res.topic.toLowerCase().includes(q);
-        if (!(matchesTitle || matchesNotes || matchesTags || matchesTopic)) return false;
-      }
-
-      // Sidebar filters
-      if (searchAreaFilter !== 'all' && res.area !== searchAreaFilter) return false;
-      if (searchTypeFilter !== 'all' && res.type !== searchTypeFilter) return false;
-      if (searchTopicFilter !== 'all' && res.topic !== searchTopicFilter) return false;
-
-      return true;
-    }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  };
-
-  const searchResultsResources = getSearchResultsList();
-
-  // Search Results pill selection arrays
-  const searchAvailableTopics = Array.from(new Set(resources.map(res => res.topic))).sort((a, b) => a.localeCompare(b));
-
-  // 5 newest added items for homepage
-  const homepageRecentlyAdded = [...resources]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const homePinnedResources = resources
+    .filter(res => homePinnedIds.includes(res.id))
     .slice(0, 5);
 
-  // Topic metrics counters (e.g. Docs: 4, Videos: 7)
-  const getTopicMetrics = () => {
-    const list = resources.filter(res => res.topic === activeTopicString);
-    const metrics: { [key in ResourceType]?: number } = {};
-    list.forEach(res => {
-      metrics[res.type] = (metrics[res.type] || 0) + 1;
-    });
-    return Object.keys(metrics).map(typeKey => ({
-      type: typeKey as ResourceType,
-      count: metrics[typeKey as ResourceType] || 0
-    })).sort((a, b) => b.count - a.count);
+  const homepageRecentlyAdded = [...resources]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 3);
+  const getRelativeTimeString = (dateStr: string) => {
+    const timeMs = new Date(dateStr).getTime();
+    const diffMs = Date.now() - timeMs;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${diffDays}d ago`;
   };
 
-  // Toggle Filters
-  const handleTagPillClick = (tag: string) => {
-    setSelectedTag(selectedTag === tag ? null : tag);
+  const getDomain = (urlStr?: string) => {
+    if (!urlStr) return '';
+    try {
+      const url = new URL(urlStr);
+      return url.hostname.replace('www.', '');
+    } catch (e) {
+      return '';
+    }
   };
 
   // Sidebar Icons
   const getAreaIcon = (area: AreaType) => {
     switch (area) {
       case 'career':
-        return <PixelBriefcase size={16} />;
+        return <Briefcase size={16} color="#1A1A1A" strokeWidth={2} />;
       case 'computer':
-        return <PixelLaptop size={16} />;
+        return <Laptop size={16} color="#1A1A1A" strokeWidth={2} />;
       case 'ai_tech':
-        return <PixelStar size={16} />;
+        return <Sparkles size={16} color="#1A1A1A" strokeWidth={2} />;
       case 'personal':
-        return <PixelHeart size={16} />;
+        return <Heart size={16} color="#1A1A1A" strokeWidth={2} />;
     }
   };
 
@@ -469,42 +564,455 @@ function App() {
     }
   };
 
+  const renderRefinedResourceTable = (resourcesList: Resource[]) => {
+    if (resourcesList.length === 0) {
+      return (
+        <div className="quiet-empty-state" style={{ padding: '2rem 1rem', display: 'flex', justifyContent: 'center' }}>
+          <div className="modal-sheet" style={{ maxWidth: '340px', width: '100%', position: 'static', transform: 'none', margin: '0 auto' }}>
+            <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
+              <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
+                <span>📁 Search Results</span>
+              </h3>
+              <button 
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  handleGoHome();
+                }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                <X size={20} color="#1A1A1A" strokeWidth={2} />
+              </button>
+            </div>
+
+            <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'center' }}>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0, fontWeight: 600 }}>
+                No resources match your search or filter criteria.
+              </p>
+            </div>
+
+            <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
+              <button 
+                type="button"
+                className="btn-ui btn-ui-primary" 
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedType('all');
+                  handleGoHome();
+                }}
+                style={{
+                  width: '100%',
+                  backgroundColor: '#7C3AED',
+                  color: '#FFFFFF',
+                  border: '2px solid #1A1A1A',
+                  boxShadow: '2px 2px 0px #1A1A1A'
+                }}
+              >
+                Go Home
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const ITEMS_PER_PAGE = 10;
+    const totalItems = resourcesList.length;
+    const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+    const safeCurrentPage = Math.min(currentPageTopic, totalPages || 1);
+    
+    const paginatedResources = resourcesList.slice(
+      (safeCurrentPage - 1) * ITEMS_PER_PAGE,
+      safeCurrentPage * ITEMS_PER_PAGE
+    );
+
+    const visibleIds = paginatedResources.map(item => item.id);
+    const isAllPageSelected = visibleIds.length > 0 && visibleIds.every(id => selectedResources.includes(id));
+
+    const rangeStart = totalItems === 0 ? 0 : (safeCurrentPage - 1) * ITEMS_PER_PAGE + 1;
+    const rangeEnd = Math.min(safeCurrentPage * ITEMS_PER_PAGE, totalItems);
+
+    return (
+      <>
+        {/* Selection Action Toolbar */}
+        <div className="refined-selection-toolbar animate-fade">
+          <div className="refined-toolbar-left">
+            <input 
+              type="checkbox" 
+              className="table-checkbox"
+              checked={isAllPageSelected}
+              onChange={() => handleToggleSelectAll(paginatedResources)}
+            />
+            <span style={{ fontSize: '0.8rem', color: '#64748B', fontWeight: 600 }}>
+              {selectedResources.length} {selectedResources.length === 1 ? 'resource' : 'resources'} selected
+            </span>
+            <div className="refined-toolbar-actions">
+              <button 
+                type="button"
+                className="refined-toolbar-btn" 
+                onClick={() => setDeletingMultipleResources(true)}
+                disabled={selectedResources.length === 0}
+              >
+                <Trash2 size={13} style={{ marginRight: '0.2rem' }} />
+                <span>Delete</span>
+              </button>
+              
+              {selectedResources.length <= 1 ? (
+                <>
+                  <button 
+                    type="button"
+                    className="refined-toolbar-btn" 
+                    onClick={handleEditSelected}
+                    disabled={selectedResources.length !== 1}
+                  >
+                    <Pencil size={13} style={{ marginRight: '0.2rem' }} />
+                    <span>Edit</span>
+                  </button>
+                  {selectedResources.length === 1 && (() => {
+                    const selectedId = selectedResources[0];
+                    const isHomePinned = homePinnedIds.includes(selectedId);
+                    const isSubtopicPinned = activeTopicString ? (subtopicPinnedMap[activeTopicString] || []).includes(selectedId) : false;
+                    const isPinnedAnywhere = isHomePinned || isSubtopicPinned;
+                    return (
+                      <button 
+                        type="button"
+                        className="refined-toolbar-btn" 
+                        onClick={() => {
+                          setPinTargetResourceId(selectedId);
+                          setIsPinModalOpen(true);
+                        }}
+                      >
+                        <span style={{ marginRight: '0.2rem' }}>{isPinnedAnywhere ? '📍' : '📌'}</span>
+                        <span>{isPinnedAnywhere ? 'Unpin' : 'Pin'}</span>
+                      </button>
+                    );
+                  })()}
+                </>
+              ) : (
+                <button 
+                  type="button"
+                  className="refined-toolbar-btn" 
+                  onClick={() => {
+                    // Pre-fill target area with current active area
+                    setMoveToArea(activeArea || '');
+                    setMoveToSubtopic('');
+                    setIsMoveModalOpen(true);
+                  }}
+                >
+                  <Folder size={13} style={{ marginRight: '0.2rem' }} />
+                  <span>Move</span>
+                </button>
+              )}
+            </div>
+          </div>
+          {selectedResources.length > 0 && (
+            <button 
+              type="button" 
+              className="refined-toolbar-clear" 
+              onClick={() => setSelectedResources([])}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {/* Excel-like Resource Table */}
+        <section style={{ overflowX: 'auto' }}>
+          <table className="refined-table">
+            <thead>
+              <tr>
+                <th style={{ width: '10px', textAlign: 'center', padding: 0 }}>
+                  {/* Stripes */}
+                </th>
+                <th style={{ width: '40px', textAlign: 'center' }}>
+                  <input 
+                    type="checkbox" 
+                    className="table-checkbox"
+                    checked={isAllPageSelected}
+                    onChange={() => handleToggleSelectAll(paginatedResources)}
+                  />
+                </th>
+                <th>Name</th>
+                <th style={{ width: '120px' }}>Type</th>
+                <th style={{ width: '150px' }}>Added</th>
+                <th style={{ width: '60px', textAlign: 'center' }}>Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedResources.map((resource) => {
+                const isSelected = selectedResources.includes(resource.id);
+                const sanitizedFilename = resource.title
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, '_')
+                  .substring(0, 18);
+
+                const getRecentFileEmoji = (type: string) => {
+                  switch (type) {
+                    case 'video': return '▶';
+                    case 'photo': return '🖼';
+                    case 'doc':
+                    case 'book':
+                    case 'article':
+                    case 'idea':
+                      return '📄';
+                    case 'website':
+                    case 'tool':
+                    default:
+                      return '🔗';
+                  }
+                };
+
+                const getFileExtension = (type: string) => {
+                  switch (type) {
+                    case 'video': return '.mp4';
+                    case 'photo': return '.png';
+                    case 'doc': return '.doc';
+                    case 'book': return '.pdf';
+                    case 'tool': return '.exe';
+                    case 'idea': return '.txt';
+                    case 'article': return '.md';
+                    default: return '.url';
+                  }
+                };
+
+                return (
+                  <tr 
+                    key={resource.id} 
+                    className={`resource-row ${isSelected ? 'selected' : ''}`}
+                    onClick={() => handleToggleSelectRow(resource.id)}
+                  >
+                    <td style={{ padding: 0, width: '4px' }}>
+                      <div className={`recent-file-stripe ${resource.area}`} style={{ height: '42px', margin: '0 auto' }} />
+                    </td>
+                    <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                      <input 
+                        type="checkbox" 
+                        className="table-checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectRow(resource.id)}
+                      />
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div className={`recent-file-icon-box ${resource.area}`} style={{ width: '34px', height: '34px', fontSize: '0.95rem' }}>
+                          <span>{getRecentFileEmoji(resource.type)}</span>
+                        </div>
+                        <div className="recent-file-meta">
+                          <span className="recent-file-name" style={{ fontSize: '0.85rem' }}>
+                            {sanitizedFilename}{getFileExtension(resource.type)}
+                            {activeTopicString && (subtopicPinnedMap[activeTopicString] || []).includes(resource.id) && (
+                              <span style={{ marginLeft: '0.35rem', fontSize: '0.75rem' }} title="Pinned to this Subtopic">📌</span>
+                            )}
+                          </span>
+                          <span className="recent-file-subtext" style={{ fontSize: '0.7rem' }}>{getDomain(resource.url) || 'local_file'}</span>
+                          <span className="recent-file-subtext" style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '0.05rem' }}>{resource.description || resource.notes || 'No description'}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`resource-type-badge ${resource.type}`} style={{ fontSize: '0.6rem' }}>
+                        {resource.type}
+                      </span>
+                    </td>
+                    <td>{getRelativeTimeString(resource.created_at)}</td>
+                    <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                      {resource.url && (
+                        <button 
+                          className="recent-file-link-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(resource.url, '_blank');
+                          }}
+                        >
+                          <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {/* Neo-brutalist Pagination controls */}
+          {totalPages > 1 && (
+            <div className="resource-pagination-container">
+              <div className="resource-pagination-controls">
+                <button 
+                  type="button" 
+                  className={`pagination-btn ${safeCurrentPage === 1 ? 'disabled' : ''}`}
+                  disabled={safeCurrentPage === 1}
+                  onClick={() => setCurrentPageTopic(safeCurrentPage - 1)}
+                >
+                  &lt;
+                </button>
+                {(() => {
+                  const pages = [];
+                  if (totalPages <= 5) {
+                    for (let i = 1; i <= totalPages; i++) pages.push(i);
+                  } else {
+                    if (safeCurrentPage <= 2) {
+                      pages.push(1, 2, 3, '...', totalPages);
+                    } else if (safeCurrentPage >= totalPages - 1) {
+                      pages.push(1, '...', totalPages - 2, totalPages - 1, totalPages);
+                    } else {
+                      pages.push(1, '...', safeCurrentPage, '...', totalPages);
+                    }
+                  }
+
+                  return pages.map((p, idx) => {
+                    if (p === '...') {
+                      return <span key={`ellipsis-${idx}`} style={{ padding: '0 0.25rem', color: 'var(--text-muted)' }}>...</span>;
+                    }
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        className={`pagination-btn ${p === safeCurrentPage ? 'active' : ''}`}
+                        onClick={() => setCurrentPageTopic(p as number)}
+                      >
+                        {p}
+                      </button>
+                    );
+                  });
+                })()}
+                <button 
+                  type="button" 
+                  className={`pagination-btn ${safeCurrentPage === totalPages ? 'disabled' : ''}`}
+                  disabled={safeCurrentPage === totalPages}
+                  onClick={() => setCurrentPageTopic(safeCurrentPage + 1)}
+                >
+                  &gt;
+                </button>
+              </div>
+              <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-pixel)' }}>
+                {rangeStart}–{rangeEnd} of {totalItems}
+              </span>
+            </div>
+          )}
+        </section>
+      </>
+    );
+  };
+
+  const renderRefinedFilterControls = () => {
+    return (
+      <section className="list-filter-row" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flexGrow: 1, minWidth: '200px' }}>
+          <input
+            type="text"
+            className="search-input-box"
+            placeholder="Search resources..."
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setCurrentPageTopic(1);
+            }}
+            style={{
+              width: '100%',
+              padding: '0.45rem 2rem 0.45rem 0.75rem',
+              border: '1.5px solid #1A1A1A',
+              borderRadius: '6px',
+              fontSize: '0.8rem',
+              fontFamily: 'inherit',
+              boxShadow: 'inset 2px 2px 0px rgba(0,0,0,0.08)'
+            }}
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery('');
+                setCurrentPageTopic(1);
+              }}
+              style={{
+                position: 'absolute',
+                right: '0.65rem',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '1rem',
+                color: '#94A3B8',
+                fontWeight: 'bold',
+                zIndex: 2
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+        
+        <select
+          className="filter-select-dropdown"
+          value={selectedType}
+          onChange={(e) => {
+            setSelectedType(e.target.value as ResourceType | 'all');
+            setCurrentPageTopic(1);
+          }}
+          title="Filter type"
+          style={{
+            padding: '0.45rem 1.75rem 0.45rem 0.75rem',
+            border: '1.5px solid #1A1A1A',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontFamily: 'inherit',
+            backgroundColor: '#FFFFFF',
+            color: '#1A1A1A',
+            cursor: 'pointer'
+          }}
+        >
+          <option value="all">All Types</option>
+          <option value="website">Website</option>
+          <option value="video">Video</option>
+          <option value="article">Article</option>
+          <option value="book">Book</option>
+          <option value="tool">Tool</option>
+          <option value="photo">Image</option>
+          <option value="idea">Idea</option>
+          <option value="doc">Document</option>
+        </select>
+
+        <select
+          className="filter-select-dropdown"
+          value={sortOrder}
+          onChange={(e) => {
+            setSortOrder(e.target.value as 'newest' | 'oldest' | 'az' | 'za');
+            setCurrentPageTopic(1);
+          }}
+          title="Sort list"
+          style={{
+            padding: '0.45rem 1.75rem 0.45rem 0.75rem',
+            border: '1.5px solid #1A1A1A',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontFamily: 'inherit',
+            backgroundColor: '#FFFFFF',
+            color: '#1A1A1A',
+            cursor: 'pointer'
+          }}
+        >
+          <option value="newest">Sort: Newest</option>
+          <option value="oldest">Sort: Oldest</option>
+          <option value="az">Sort: A-Z</option>
+          <option value="za">Sort: Z-A</option>
+        </select>
+      </section>
+    );
+  };
+
   return (
     <>
-      {/* Startup loading sequence screen */}
-      {isStartupLoading && (
-        <div className="startup-loader-overlay">
-          <img src="/loading.png" alt="respawning..." className="startup-loader-img" />
-          <div className="startup-loader-progress-container">
-            <div className="startup-loader-progress-bar"></div>
-          </div>
-        </div>
-      )}
-
-      {/* Save Game Overlay popup */}
-      {showSavePopup && (
-        <div className="save-popup-overlay">
-          <div className="save-popup-card">
-            <img src="/save_game.png" alt="Save Game" className="save-popup-img" />
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>SAVE GAME COMPLETE</h3>
-            <p style={{ fontSize: '0.8rem', opacity: 0.85, margin: 0 }}>don't worry, you've got this.</p>
-          </div>
-        </div>
-      )}
 
       <div className="app-layout-wrapper">
       
       {/* 1. LEFT SIDEBAR PANEL */}
-      <div className="window-outer sidebar-window">
+      <div className={`window-outer sidebar-window ${activeArea || 'generic'}`}>
         <div className="window-header sidebar-header">
           <div className="window-title">
-            <PixelFolder size={16} />
+            <Folder size={16} color="#1A1A1A" strokeWidth={2} />
             <span>navigator.sys</span>
-          </div>
-          <div className="window-controls">
-            <span className="window-dot min"></span>
-            <span className="window-dot max"></span>
-            <span className="window-dot close"></span>
           </div>
         </div>
 
@@ -512,7 +1020,7 @@ function App() {
           
           {/* Brand Logo */}
           <div className="sidebar-logo" onClick={handleGoHome} style={{ cursor: 'pointer' }}>
-            <span className="sidebar-logo-highlighted">Resource Vault</span>
+            <span className="sidebar-logo-highlighted">Resource Vault <span style={{ color: '#7C3AED', marginLeft: '0.2rem' }}>✦</span></span>
           </div>
 
           {/* Home Button */}
@@ -521,7 +1029,7 @@ function App() {
               className={`sidebar-item generic ${activeView === 'home' ? 'active' : ''}`}
               onClick={handleGoHome}
             >
-              <span className="sidebar-item-icon"><PixelHome size={16} /></span>
+              <span className="sidebar-item-icon"><Home size={16} color="#1A1A1A" strokeWidth={2} /></span>
               <span>Home</span>
             </div>
           </div>
@@ -541,6 +1049,12 @@ function App() {
             ))}
           </div>
 
+          {/* Brand Box Sticker */}
+          <div className="sidebar-brand-box">
+            <span style={{ fontSize: '1rem', color: '#7C3AED' }}>✦</span>
+            <span style={{ textAlign: 'left' }}>ORGANIZE. SAVE.<br/>GROW. REPEAT.</span>
+          </div>
+
         </aside>
       </div>
 
@@ -550,55 +1064,13 @@ function App() {
           <div className="window-title">
             <span>{getMainWindowTitle()}</span>
           </div>
-          <div className="window-controls">
-            <span className="window-dot min"></span>
-            <span className="window-dot max"></span>
-            <span className="window-dot close"></span>
-          </div>
         </div>
 
-        <main className="main-panel-container">
-          {!isSupabaseConfigured && (
-            <div style={{
-              backgroundColor: '#fef3c7',
-              border: '3px solid #d97706',
-              borderRadius: '4px',
-              padding: '0.65rem 1rem',
-              marginBottom: '1.25rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontFamily: 'var(--font-sans)',
-              fontSize: '0.85rem',
-              color: '#92400e',
-              boxShadow: '3px 3px 0px #d97706'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '1rem' }}>⚠️</span>
-                <span>
-                  <strong>Running in Local PERSISTENCE Mode:</strong> Supabase environment variables are missing. Configure <code>.env.local</code> to connect your live Supabase database.
-                </span>
-              </div>
-              <a 
-                href="https://supabase.com" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                style={{
-                  backgroundColor: '#d97706',
-                  color: '#ffffff',
-                  border: '2px solid #92400e',
-                  padding: '0.15rem 0.5rem',
-                  borderRadius: '2px',
-                  textDecoration: 'none',
-                  fontWeight: 600,
-                  fontSize: '0.75rem',
-                  boxShadow: '1px 1px 0px #92400e'
-                }}
-              >
-                Setup Supabase
-              </a>
-            </div>
-          )}
+        <main className={`main-panel-container ${
+          (activeView === 'area' || activeView === 'topic') && activeArea ? `area-view-bg ${activeArea}` : ''
+        } ${
+          activeView === 'detail' && selectedResource ? `area-view-bg ${selectedResource.area}` : ''
+        }`}>
         
         {/* HOMEPAGE VIEW */}
         {activeView === 'home' && (
@@ -613,28 +1085,52 @@ function App() {
                 </h1>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Welcome back to your curated knowledge base.</p>
               </div>
-              <button className="btn-detail-open" onClick={handleOpenAddForm}>
-                <PixelPlus size={14} />
+              <button className="btn-detail-open btn-action-yellow" onClick={handleOpenAddForm}>
+                <Plus size={14} color="#1A1A1A" strokeWidth={2} />
                 <span>Add Resource</span>
               </button>
             </div>
 
             {/* Search Bar section */}
-            <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '-0.75rem' }}>
-              <div className="scoped-list-search-wrapper">
-                <div className="scoped-list-search-input-container">
-                  <input
-                    type="text"
-                    placeholder="SEARCH"
-                    className="scoped-list-search-input"
-                    value={searchQuery}
-                    onChange={(e) => handleGlobalSearchChange(e.target.value)}
-                  />
-                </div>
-                <button type="button" className="scoped-list-search-btn" title="Search">
-                  🔍
-                </button>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '-0.75rem', gap: '0.5rem', width: '100%', maxWidth: '320px' }}>
+              <div style={{ position: 'relative', flexGrow: 1 }}>
+                <Input
+                  type="text"
+                  placeholder="SEARCH"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{ width: '100%', paddingRight: searchQuery ? '2rem' : '0.5rem', backgroundColor: '#FFFFFF' }}
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    style={{
+                      position: 'absolute',
+                      right: '0.65rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '1.15rem',
+                      color: '#94A3B8',
+                      fontWeight: 'bold',
+                      zIndex: 10
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
+              <button 
+                type="button" 
+                className="btn-ui btn-ui-secondary" 
+                title="Search"
+                style={{ padding: '0.45rem 0.65rem' }}
+              >
+                🔍
+              </button>
             </div>
 
             {/* YOUR LIBRARY grid tiles */}
@@ -651,8 +1147,12 @@ function App() {
                       {getAreaIcon(areaKey)}
                       <span>{getAreaNameReadable(areaKey)}</span>
                     </div>
+                    <div className="compact-nav-tile-divider" />
                     <span className="compact-nav-tile-count">
                       {getAreaCount(areaKey)}
+                      <span style={{ fontSize: '0.55rem', fontWeight: 900, color: 'var(--text-muted)', marginLeft: '0.2rem', letterSpacing: '0.05em' }}>
+                        {getAreaCount(areaKey) === 1 ? 'RESOURCE' : 'RESOURCES'}
+                      </span>
                     </span>
                   </div>
                 ))}
@@ -665,19 +1165,194 @@ function App() {
             <section>
               {searchQuery.trim() === '' ? (
                 <>
-                  <h2 className="homepage-sub-header">Recently Added</h2>
+                  {/* PINNED Section */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <h2 className="homepage-sub-header" style={{ margin: 0 }}>PINNED</h2>
+                  </div>
+                  {homePinnedResources.length > 0 ? (
+                    <div className="recent-files-list" style={{ marginBottom: '1.5rem' }}>
+                      {homePinnedResources.map((resource) => {
+                        const sanitizedFilename = resource.title
+                          .toLowerCase()
+                          .replace(/[^a-z0-9]+/g, '_')
+                          .substring(0, 18);
+
+                        const getRecentFileEmoji = (type: string) => {
+                          switch (type) {
+                            case 'video': return '▶';
+                            case 'photo': return '🖼';
+                            case 'doc':
+                            case 'book':
+                            case 'article':
+                            case 'idea':
+                              return '📄';
+                            case 'website':
+                            case 'tool':
+                            default:
+                              return '🔗';
+                          }
+                        };
+
+                        const getFileExtension = (type: string) => {
+                          switch (type) {
+                            case 'video': return '.mp4';
+                            case 'photo': return '.png';
+                            case 'doc': return '.doc';
+                            case 'book': return '.pdf';
+                            case 'tool': return '.exe';
+                            case 'idea': return '.txt';
+                            case 'article': return '.md';
+                            default: return '.url';
+                          }
+                        };
+
+                        return (
+                          <div 
+                            key={`pinned-home-${resource.id}`} 
+                            className="recent-file-row animate-fade"
+                            onClick={() => handleGoToTopic(resource.topic, resource.area)}
+                          >
+                            <div className={`recent-file-stripe ${resource.area}`} />
+                            <div className={`recent-file-icon-box ${resource.area}`}>
+                              <span>{getRecentFileEmoji(resource.type)}</span>
+                            </div>
+                            <div className="recent-file-meta">
+                              <span className="recent-file-name">{sanitizedFilename}{getFileExtension(resource.type)}</span>
+                              <span className="recent-file-subtext">{getDomain(resource.url) || 'local_file'}</span>
+                            </div>
+                            <span className={`recent-file-topic-pill ${resource.area}`}>
+                              {resource.topic}
+                            </span>
+                            <span className="recent-file-time">
+                              {getRelativeTimeString(resource.created_at)}
+                            </span>
+                            <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                              <button 
+                                className="recent-file-link-btn"
+                                title="Unpin from Home"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHomePinnedIds(prev => prev.filter(id => id !== resource.id));
+                                }}
+                                style={{ backgroundColor: '#FEE2E2' }}
+                              >
+                                <span style={{ fontSize: '0.8rem' }}>📍</span>
+                              </button>
+                              {resource.url && (
+                                <button 
+                                  className="recent-file-link-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    window.open(resource.url, '_blank');
+                                  }}
+                                >
+                                  <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="quiet-empty-state" style={{ padding: '1.25rem', marginBottom: '1.5rem', border: '2px dashed #1A1A1A', borderRadius: '8px', textAlign: 'center' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>No pinned resources yet.</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <h2 className="homepage-sub-header" style={{ margin: 0 }}>Recently Added</h2>
+                    <button 
+                      type="button" 
+                      className="detail-back-link" 
+                      onClick={() => setActiveView('all')}
+                      style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
+                    >
+                      <span>View all →</span>
+                    </button>
+                  </div>
                   {homepageRecentlyAdded.length > 0 ? (
-                    <div className="resources-file-grid">
-                      {homepageRecentlyAdded.map(resource => (
-                        <ResourceCard
-                          key={resource.id}
-                          resource={resource}
-                          onEdit={handleOpenEditForm}
-                          onDelete={(id) => setDeletingResourceId(id)}
-                          onSelect={handleOpenResourceDetail}
-                          onTopicClick={handleGoToTopic}
-                        />
-                      ))}
+                    <div className="recent-files-list">
+                      {homepageRecentlyAdded.map((resource) => {
+                        const sanitizedFilename = resource.title
+                          .toLowerCase()
+                          .replace(/[^a-z0-9]+/g, '_')
+                          .substring(0, 18);
+
+                        const getRecentFileEmoji = (type: string) => {
+                          switch (type) {
+                            case 'video': return '▶';
+                            case 'photo': return '🖼';
+                            case 'doc':
+                            case 'book':
+                            case 'article':
+                            case 'idea':
+                              return '📄';
+                            case 'website':
+                            case 'tool':
+                            default:
+                              return '🔗';
+                          }
+                        };
+
+                        const getFileExtension = (type: string) => {
+                          switch (type) {
+                            case 'video': return '.mp4';
+                            case 'photo': return '.png';
+                            case 'doc': return '.doc';
+                            case 'book': return '.pdf';
+                            case 'tool': return '.exe';
+                            case 'idea': return '.txt';
+                            case 'article': return '.md';
+                            default: return '.url';
+                          }
+                        };
+
+                        return (
+                          <div 
+                            key={resource.id} 
+                            className="recent-file-row animate-fade"
+                            onClick={() => handleGoToTopic(resource.topic, resource.area)}
+                          >
+                            {/* 1. Left border area color stripe */}
+                            <div className={`recent-file-stripe ${resource.area}`} />
+
+                            {/* 2. Type Icon box */}
+                            <div className={`recent-file-icon-box ${resource.area}`}>
+                              <span>{getRecentFileEmoji(resource.type)}</span>
+                            </div>
+
+                            {/* 3. Resource Name & Domain subtext */}
+                            <div className="recent-file-meta">
+                              <span className="recent-file-name">{sanitizedFilename}{getFileExtension(resource.type)}</span>
+                              <span className="recent-file-subtext">{getDomain(resource.url) || 'local_file'}</span>
+                            </div>
+
+                            {/* 4. Topic Pill */}
+                            <span className={`recent-file-topic-pill ${resource.area}`}>
+                              {resource.topic}
+                            </span>
+
+                            {/* 5. Timestamp */}
+                            <span className="recent-file-time">
+                              {getRelativeTimeString(resource.created_at)}
+                            </span>
+
+                            {/* 6. View Button */}
+                            {resource.url && (
+                              <button 
+                                className="recent-file-link-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.open(resource.url, '_blank');
+                                }}
+                              >
+                                <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="quiet-empty-state">
@@ -690,36 +1365,7 @@ function App() {
               ) : (
                 <>
                   <h2 className="homepage-sub-header">Search Results for "{searchQuery}"</h2>
-                  {searchResultsResources.length > 0 ? (
-                    <div className="resources-file-grid">
-                      {searchResultsResources.map(resource => (
-                        <ResourceCard
-                          key={resource.id}
-                          resource={resource}
-                          onEdit={handleOpenEditForm}
-                          onDelete={(id) => setDeletingResourceId(id)}
-                          onSelect={handleOpenResourceDetail}
-                          onTopicClick={handleGoToTopic}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="quiet-empty-state" style={{ padding: '2rem 1rem' }}>
-                      <div className="retro-dialog-outer">
-                        <div className="retro-dialog-box">
-                          <div className="retro-dialog-titlebar">
-                            <span className="retro-dialog-floppy">💾</span>
-                            <button type="button" className="retro-dialog-close-btn" onClick={() => setSearchQuery('')}>×</button>
-                          </div>
-                          <div className="retro-dialog-body">
-                            <div className="retro-dialog-text">File Not Found</div>
-                            <div className="retro-dialog-emoticon">(╯°□°)╯︵ ┻━┻</div>
-                            <button type="button" className="retro-dialog-ok-btn" onClick={() => setSearchQuery('')}>OK</button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  {renderRefinedResourceTable(searchResultsResources)}
                 </>
               )}
             </section>
@@ -741,90 +1387,9 @@ function App() {
               </p>
             </div>
 
-            {/* Filter toolbar */}
-            <section className="list-filter-row">
-              <div className="filter-left-group">
-                
-                
-                <select
-                  className="filter-select-dropdown"
-                  value={selectedType}
-                  onChange={(e) => setSelectedType(e.target.value as ResourceType | 'all')}
-                  title="Filter type"
-                >
-                  <option value="all">All Types</option>
-                  <option value="website">Websites</option>
-                  <option value="video">Videos</option>
-                  <option value="article">Articles</option>
-                  <option value="book">Books</option>
-                  <option value="tool">Tools</option>
-                  <option value="photo">Photos</option>
-                  <option value="idea">Ideas</option>
-                  <option value="doc">Docs</option>
-                </select>
+            {renderRefinedFilterControls()}
 
-                {activeView === 'all' && (
-                  <select
-                    className="filter-select-dropdown"
-                    value={sortOrder}
-                    onChange={(e) => setSortOrder(e.target.value as 'recent' | 'az')}
-                    title="Sort list"
-                  >
-                    <option value="recent">Sort: Recent</option>
-                    <option value="az">Sort: A-Z</option>
-                  </select>
-                )}
-              </div>
-            </section>
-
-            {/* Tag Pills */}
-            {availableTags.length > 0 && (
-              <div className="list-tag-pills-bar">
-                {availableTags.map(tag => (
-                  <button
-                    key={tag}
-                    className={`tag-pill-item ${selectedTag === tag ? 'active' : ''}`}
-                    onClick={() => handleTagPillClick(tag)}
-                  >
-                    #{tag}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Data grid */}
-            <section style={{ marginTop: '0.25rem' }}>
-              {finalListResources.length > 0 ? (
-                <div className="resources-file-grid">
-                  {finalListResources.map(resource => (
-                    <ResourceCard
-                      key={resource.id}
-                      resource={resource}
-                      onEdit={handleOpenEditForm}
-                      onDelete={(id) => setDeletingResourceId(id)}
-                      onSelect={handleOpenResourceDetail}
-                      onTopicClick={handleGoToTopic}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="quiet-empty-state" style={{ padding: '2rem 1rem' }}>
-                  <div className="retro-dialog-outer">
-                    <div className="retro-dialog-box">
-                      <div className="retro-dialog-titlebar">
-                        <span className="retro-dialog-floppy">💾</span>
-                        <button type="button" className="retro-dialog-close-btn" onClick={() => { setSearchQuery(''); handleGoHome(); }}>×</button>
-                      </div>
-                      <div className="retro-dialog-body">
-                        <div className="retro-dialog-text">File Not Found</div>
-                        <div className="retro-dialog-emoticon">(╯°□°)╯︵ ┻━┻</div>
-                        <button type="button" className="retro-dialog-ok-btn" onClick={() => { setSearchQuery(''); handleGoHome(); }}>OK</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </section>
+            {renderRefinedResourceTable(finalListResources)}
 
           </div>
         )}
@@ -835,7 +1400,7 @@ function App() {
             
             {/* Breadcrumb Back Link */}
             <button className="detail-back-link" onClick={handleGoHome} style={{ marginBottom: '0.5rem' }}>
-              <PixelArrow size={14} style={{ marginRight: '0.2rem' }} />
+              <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
               <span>Resource Vault</span>
             </button>
 
@@ -851,8 +1416,8 @@ function App() {
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   {resources.filter(res => res.area === activeArea).length} files
                 </span>
-                <button className="btn-detail-open" style={{ padding: '0.45rem 1rem', fontSize: '0.8rem' }} onClick={handleOpenAddForm}>
-                  <PixelPlus size={12} />
+                <button className="btn-detail-open btn-action-yellow" style={{ padding: '0.45rem 1rem', fontSize: '0.8rem' }} onClick={handleOpenAddForm}>
+                  <Plus size={12} color="#1A1A1A" strokeWidth={2} />
                   <span>Add Resource</span>
                 </button>
               </div>
@@ -876,12 +1441,13 @@ function App() {
                           onClick={() => handleGoToTopic(topicName, activeArea)}
                         >
                           <div className="subtopic-card-folder-icon">
-                            <PixelFolder size={20} />
+                            <Folder size={20} color="#1A1A1A" strokeWidth={2} />
                           </div>
                           <div className="subtopic-card-info">
                             <span className="subtopic-card-name">{topicName}</span>
                             <span className="subtopic-card-count">{count} {count === 1 ? 'file' : 'files'}</span>
                           </div>
+                          <ChevronRight size={16} color="#1A1A1A" strokeWidth={2} style={{ marginLeft: 'auto' }} />
                         </div>
                       );
                     })}
@@ -910,63 +1476,31 @@ function App() {
                 onClick={() => handleGoToArea(activeArea || 'career')} 
                 style={{ marginBottom: '0.5rem' }}
               >
-                <PixelArrow size={14} style={{ marginRight: '0.2rem' }} />
+                <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
                 <span>{getAreaNameReadable(activeArea)}</span>
               </button>
               
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>
-                  {activeTopicString}
-                </h1>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {finalListResources.length} resources
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h1 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>
+                    {activeTopicString}
+                  </h1>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    {finalListResources.length} resources
+                  </span>
+                </div>
+                <button className="btn-detail-open btn-action-yellow" style={{ padding: '0.45rem 1rem', fontSize: '0.8rem' }} onClick={handleOpenAddForm}>
+                  <Plus size={12} color="#1A1A1A" strokeWidth={2} />
+                  <span>Add Resource</span>
+                </button>
               </div>
             </div>
 
-            {/* Metrics cards row: Counts by format type */}
-            <section className="topic-metrics-row">
-              {getTopicMetrics().map(metric => (
-                <div key={metric.type} className="topic-metric-box">
-                  <span style={{ textTransform: 'capitalize' }}>{metric.type}s</span>
-                  <span className="topic-metric-count">{metric.count}</span>
-                </div>
-              ))}
-            </section>
+            <div className="detail-divider" style={{ margin: '0' }} />
 
-            {/* Data grid */}
-            <section style={{ marginTop: '0.25rem' }}>
-              {finalListResources.length > 0 ? (
-                <div className="resources-file-grid">
-                  {finalListResources.map(resource => (
-                    <ResourceCard
-                      key={resource.id}
-                      resource={resource}
-                      onEdit={handleOpenEditForm}
-                      onDelete={(id) => setDeletingResourceId(id)}
-                      onSelect={handleOpenResourceDetail}
-                      onTopicClick={handleGoToTopic}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="quiet-empty-state" style={{ padding: '2rem 1rem' }}>
-                  <div className="retro-dialog-outer">
-                    <div className="retro-dialog-box">
-                      <div className="retro-dialog-titlebar">
-                        <span className="retro-dialog-floppy">💾</span>
-                        <button type="button" className="retro-dialog-close-btn" onClick={() => { setSearchQuery(''); handleGoHome(); }}>×</button>
-                      </div>
-                      <div className="retro-dialog-body">
-                        <div className="retro-dialog-text">File Not Found</div>
-                        <div className="retro-dialog-emoticon">(╯°□°)╯︵ ┻━┻</div>
-                        <button type="button" className="retro-dialog-ok-btn" onClick={() => { setSearchQuery(''); handleGoHome(); }}>OK</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </section>
+            {renderRefinedFilterControls()}
+
+            {renderRefinedResourceTable(finalListResources)}
 
           </div>
         )}
@@ -978,7 +1512,7 @@ function App() {
             {/* Header back & title */}
             <div>
               <button className="detail-back-link" onClick={handleReturnFromSearch} style={{ marginBottom: '0.5rem' }}>
-                <PixelArrow size={14} style={{ marginRight: '0.2rem' }} />
+                <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
                 <span>Return to previous view</span>
               </button>
               <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>
@@ -989,190 +1523,14 @@ function App() {
               </p>
             </div>
 
-            {/* Scoped pill selection blocks for Search page */}
-            <section className="search-filter-pills-block">
-              {/* Areas selector */}
-              <div className="search-filter-pill-line">
-                <span className="search-filter-pill-label">Areas</span>
-                <button 
-                  className={`tag-pill-item ${searchAreaFilter === 'all' ? 'active' : ''}`}
-                  onClick={() => setSearchAreaFilter('all')}
-                >
-                  All
-                </button>
-                {(['career', 'personal', 'lifestyle', 'interests'] as AreaType[]).map(ar => (
-                  <button 
-                    key={ar}
-                    className={`tag-pill-item ${searchAreaFilter === ar ? 'active' : ''}`}
-                    onClick={() => setSearchAreaFilter(ar)}
-                  >
-                    {getAreaNameReadable(ar)}
-                  </button>
-                ))}
-              </div>
+            {renderRefinedFilterControls()}
 
-              {/* Types selector */}
-              <div className="search-filter-pill-line" style={{ marginTop: '0.25rem' }}>
-                <span className="search-filter-pill-label">Types</span>
-                <button 
-                  className={`tag-pill-item ${searchTypeFilter === 'all' ? 'active' : ''}`}
-                  onClick={() => setSearchTypeFilter('all')}
-                >
-                  All
-                </button>
-                {(['website', 'video', 'article', 'book', 'tool', 'photo', 'idea', 'doc'] as ResourceType[]).map(ty => (
-                  <button 
-                    key={ty}
-                    className={`tag-pill-item ${searchTypeFilter === ty ? 'active' : ''}`}
-                    onClick={() => setSearchTypeFilter(ty)}
-                  >
-                    {ty}
-                  </button>
-                ))}
-              </div>
-
-              {/* Topics selector */}
-              {searchAvailableTopics.length > 0 && (
-                <div className="search-filter-pill-line" style={{ marginTop: '0.25rem' }}>
-                  <span className="search-filter-pill-label">Topics</span>
-                  <button 
-                    className={`tag-pill-item ${searchTopicFilter === 'all' ? 'active' : ''}`}
-                    onClick={() => setSearchTopicFilter('all')}
-                  >
-                    All
-                  </button>
-                  {searchAvailableTopics.slice(0, 10).map(tp => (
-                    <button 
-                      key={tp}
-                      className={`tag-pill-item ${searchTopicFilter === tp ? 'active' : ''}`}
-                      onClick={() => setSearchTopicFilter(tp)}
-                    >
-                      {tp}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            {/* Results grid list */}
-            <section style={{ marginTop: '0.25rem' }}>
-              {searchResultsResources.length > 0 ? (
-                <div className="resources-file-grid">
-                  {searchResultsResources.map(resource => (
-                    <ResourceCard
-                      key={resource.id}
-                      resource={resource}
-                      onEdit={handleOpenEditForm}
-                      onDelete={(id) => setDeletingResourceId(id)}
-                      onSelect={handleOpenResourceDetail}
-                      onTopicClick={handleGoToTopic}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="quiet-empty-state" style={{ padding: '2rem 1rem' }}>
-                  <div className="retro-dialog-outer">
-                    <div className="retro-dialog-box">
-                      <div className="retro-dialog-titlebar">
-                        <span className="retro-dialog-floppy">💾</span>
-                        <button type="button" className="retro-dialog-close-btn" onClick={() => { setSearchQuery(''); handleReturnFromSearch(); }}>×</button>
-                      </div>
-                      <div className="retro-dialog-body">
-                        <div className="retro-dialog-text">File Not Found</div>
-                        <div className="retro-dialog-emoticon">(╯°□°)╯︵ ┻━┻</div>
-                        <button type="button" className="retro-dialog-ok-btn" onClick={() => { setSearchQuery(''); handleReturnFromSearch(); }}>OK</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </section>
+            {renderRefinedResourceTable(searchResultsResources)}
 
           </div>
         )}
 
-        {/* RESOURCE DETAIL READING PANE VIEW */}
-        {activeView === 'detail' && selectedResource && (
-          <div className="detail-view-container">
-            
-            {/* Breadcrumb Back Link */}
-            <button className="detail-back-link" onClick={handleGoBackFromDetail}>
-              <PixelArrow size={14} style={{ marginRight: '0.2rem' }} />
-              <span>
-                Back to {
-                  previousView === 'area' && previousArea 
-                    ? getAreaNameReadable(previousArea) 
-                    : previousView === 'topic' && previousTopicString 
-                      ? previousTopicString 
-                      : previousView === 'recent' 
-                        ? 'Recently Added'
-                        : 'Library'
-                }
-              </span>
-            </button>
 
-            {/* Title */}
-            <h1 className="detail-title">{selectedResource.title}</h1>
-
-            {/* Format Subtitle */}
-            <div className="detail-meta-subtitle">
-              {selectedResource.type} &middot; {selectedResource.topic} &middot; {getAreaNameReadable(selectedResource.area)}
-            </div>
-
-            <div className="detail-divider" />
-
-            {/* Description/Notes preview */}
-            {selectedResource.notes && (
-              <p className="detail-description">{selectedResource.notes}</p>
-            )}
-
-            {/* Large primary Open Resource Button */}
-            {selectedResource.url && (
-              <a 
-                href={selectedResource.url} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="btn-detail-open"
-              >
-                <span>Open Resource</span>
-                <PixelLink size={14} />
-              </a>
-            )}
-
-            <div className="detail-divider" />
-
-            {/* Inline image if photo format */}
-            {selectedResource.type === 'photo' && selectedResource.file_path && (
-              <div className="detail-photo-box">
-                <img 
-                  src={selectedResource.file_path} 
-                  alt={selectedResource.title} 
-                  className="detail-photo-image"
-                />
-              </div>
-            )}
-
-            {/* Topics/Tags Pills List */}
-            {selectedResource.tags && selectedResource.tags.length > 0 && (
-              <div>
-                <h3 className="detail-notes-title" style={{ marginBottom: '0.4rem' }}>Tags</h3>
-                <div className="detail-tag-chips-list">
-                  {selectedResource.tags.map(tag => (
-                    <span key={tag} className="detail-tag-chip">
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Date Saved */}
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-              Saved on {new Date(selectedResource.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
-            </div>
-
-          </div>
-        )}
 
       </main>
       </div>
@@ -1191,13 +1549,17 @@ function App() {
       {deletingResourceId && (
         <div className="modal-overlay-bg">
           <div className="modal-sheet" style={{ maxWidth: '360px' }}>
-            <div className="modal-sheet-header" style={{ borderBottom: 'none' }}>
-              <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#dc2626' }}>
-                <PixelAlert size={18} />
+            <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
+              <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
+                <AlertCircle size={18} color="#1A1A1A" strokeWidth={2} />
                 Delete Resource?
               </h3>
-              <button className="icon-btn-compact" onClick={() => setDeletingResourceId(null)}>
-                <PixelClose size={12} />
+              <button 
+                type="button"
+                onClick={() => setDeletingResourceId(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                <X size={20} color="#1A1A1A" strokeWidth={2} />
               </button>
             </div>
             
@@ -1224,6 +1586,250 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Multi-Item Delete Confirmation Modal */}
+      {deletingMultipleResources && (
+        <div className="modal-overlay-bg animate-fade">
+          <div className="modal-sheet" style={{ maxWidth: '360px' }}>
+            <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
+              <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
+                <AlertCircle size={18} color="#1A1A1A" strokeWidth={2} />
+                Delete {selectedResources.length} resources?
+              </h3>
+              <button 
+                type="button"
+                onClick={() => setDeletingMultipleResources(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                <X size={20} color="#1A1A1A" strokeWidth={2} />
+              </button>
+            </div>
+            
+            <div style={{ padding: '0 1.5rem 1.25rem 1.5rem' }}>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                This action cannot be undone.
+              </p>
+            </div>
+            
+            <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
+              <button 
+                className="btn-ui btn-ui-secondary" 
+                onClick={() => setDeletingMultipleResources(false)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn-ui btn-ui-danger" 
+                onClick={handleConfirmDeleteMultiple}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Move Resources Modal */}
+      {isMoveModalOpen && (
+        <div className="modal-overlay-bg animate-fade">
+          <div className="modal-sheet" style={{ maxWidth: '380px' }}>
+            <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
+              <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
+                <Folder size={18} color="#1A1A1A" strokeWidth={2} />
+                Move {selectedResources.length} resources
+              </h3>
+              <button 
+                type="button"
+                onClick={() => setIsMoveModalOpen(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                <X size={20} color="#1A1A1A" strokeWidth={2} />
+              </button>
+            </div>
+            
+            <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
+                  Target Area
+                </label>
+                <select
+                  value={moveToArea}
+                  onChange={(e) => setMoveToArea(e.target.value as AreaType)}
+                  style={{
+                    width: '100%',
+                    padding: '0.45rem 0.75rem',
+                    border: '2px solid #1A1A1A',
+                    borderRadius: '6px',
+                    fontSize: '0.8rem',
+                    fontFamily: 'inherit',
+                    backgroundColor: '#FFFFFF'
+                  }}
+                >
+                  <option value="" disabled>Select Area</option>
+                  <option value="career">Career</option>
+                  <option value="computer">Computer</option>
+                  <option value="ai_tech">AI & Tech</option>
+                  <option value="personal">Personal</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
+                  Subtopic Name
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter Subtopic name (e.g. Backend Deployment)"
+                  value={moveToSubtopic}
+                  onChange={(e) => setMoveToSubtopic(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '0.45rem 0.75rem',
+                    border: '2px solid #1A1A1A',
+                    borderRadius: '6px',
+                    fontSize: '0.8rem',
+                    fontFamily: 'inherit',
+                    boxShadow: 'inset 2px 2px 0px rgba(0,0,0,0.08)'
+                  }}
+                />
+              </div>
+            </div>
+            
+            <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
+              <button 
+                className="btn-ui btn-ui-secondary" 
+                onClick={() => setIsMoveModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button 
+                type="button"
+                className="btn-ui btn-ui-primary" 
+                onClick={handleConfirmMoveSelected}
+                disabled={!moveToArea || !moveToSubtopic.trim()}
+                style={{
+                  backgroundColor: '#7C3AED',
+                  color: '#FFFFFF',
+                  border: '2px solid #1A1A1A',
+                  boxShadow: '2px 2px 0px #1A1A1A'
+                }}
+              >
+                Move
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Pin / Unpin Destination Modal */}
+      {isPinModalOpen && pinTargetResourceId && (() => {
+        const targetResource = resources.find(r => r.id === pinTargetResourceId);
+        if (!targetResource) return null;
+
+        const isHomePinned = homePinnedIds.includes(pinTargetResourceId);
+        const subtopicKey = targetResource.topic;
+        const currentSubtopicPinned = subtopicPinnedMap[subtopicKey] || [];
+        const isSubtopicPinned = currentSubtopicPinned.includes(pinTargetResourceId);
+
+        const handleToggleHomePin = () => {
+          if (isHomePinned) {
+            setHomePinnedIds(prev => prev.filter(id => id !== pinTargetResourceId));
+          } else {
+            if (homePinnedIds.length >= 5) {
+              alert("You can pin up to 5 resources. Unpin an existing resource first.");
+              return;
+            }
+            setHomePinnedIds(prev => [...prev, pinTargetResourceId]);
+          }
+        };
+
+        const handleToggleSubtopicPin = () => {
+          if (isSubtopicPinned) {
+            setSubtopicPinnedMap(prev => ({
+              ...prev,
+              [subtopicKey]: (prev[subtopicKey] || []).filter(id => id !== pinTargetResourceId)
+            }));
+          } else {
+            if (currentSubtopicPinned.length >= 3) {
+              alert(`You can pin up to 3 resources in this subtopic. Unpin an existing resource first.`);
+              return;
+            }
+            setSubtopicPinnedMap(prev => ({
+              ...prev,
+              [subtopicKey]: [...(prev[subtopicKey] || []), pinTargetResourceId]
+            }));
+          }
+        };
+
+        return (
+          <div className="modal-overlay-bg animate-fade">
+            <div className="modal-sheet" style={{ maxWidth: '340px' }}>
+              <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
+                <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
+                  <span>📌 Pin Resource</span>
+                </h3>
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setIsPinModalOpen(false);
+                    setPinTargetResourceId(null);
+                  }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={20} color="#1A1A1A" strokeWidth={2} />
+                </button>
+              </div>
+
+              <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  Where do you want to pin this resource?
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginTop: '0.25rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                    <input 
+                      type="checkbox"
+                      className="table-checkbox"
+                      checked={isHomePinned}
+                      onChange={handleToggleHomePin}
+                    />
+                    <span>Home (Pinned Section)</span>
+                  </label>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                    <input 
+                      type="checkbox"
+                      className="table-checkbox"
+                      checked={isSubtopicPinned}
+                      onChange={handleToggleSubtopicPin}
+                    />
+                    <span>This Subtopic ({subtopicKey})</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
+                <button 
+                  className="btn-ui btn-ui-primary" 
+                  onClick={() => {
+                    setIsPinModalOpen(false);
+                    setPinTargetResourceId(null);
+                    setSelectedResources([]);
+                  }}
+                  style={{
+                    width: '100%',
+                    backgroundColor: '#7C3AED',
+                    color: '#FFFFFF',
+                    border: '2px solid #1A1A1A',
+                    boxShadow: '2px 2px 0px #1A1A1A'
+                  }}
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
     </>
   );

@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Resource } from '../types';
+import { Pencil, Trash2, ExternalLink } from 'lucide-react';
 
 interface ResourceCardProps {
   resource: Resource;
@@ -7,6 +8,7 @@ interface ResourceCardProps {
   onDelete: (id: string) => void;
   onSelect: (resource: Resource) => void;
   onTopicClick?: (topic: string) => void;
+  layout?: 'vertical' | 'horizontal';
 }
 
 export const ResourceCard: React.FC<ResourceCardProps> = ({
@@ -14,7 +16,8 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
   onEdit,
   onDelete,
   onSelect,
-  onTopicClick
+  onTopicClick,
+  layout = 'vertical'
 }) => {
 
   // Get retro file extension based on type
@@ -82,9 +85,82 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
     .replace(/[^a-z0-9]+/g, '_')
     .substring(0, 16);
 
+
+  if (layout === 'horizontal') {
+    return (
+      <div 
+        className={`file-card-horizontal animate-fade ${resource.area}`} 
+        onClick={() => onSelect(resource)}
+      >
+        {/* Left category-tinted icon box */}
+        <div className="horizontal-card-icon-container">
+          <span style={{ fontSize: '1.5rem' }}>{getFileEmoji()}</span>
+        </div>
+
+        {/* Card info block */}
+        <div className="horizontal-card-info">
+          <div className="horizontal-card-header-row">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <span className="horizontal-card-filename">{sanitizedFilename}{getFileExtension()}</span>
+            </div>
+            
+            {/* Action controls */}
+            <div className="horizontal-card-controls" onClick={(e) => e.stopPropagation()}>
+              <button 
+                type="button" 
+                onClick={() => onEdit(resource)}
+                title="Edit file details"
+              >
+                <Pencil size={14} color="#1A1A1A" strokeWidth={2} />
+              </button>
+              <button 
+                type="button" 
+                onClick={() => onDelete(resource.id)}
+                title="Delete file"
+              >
+                <Trash2 size={14} color="#1A1A1A" strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+
+          {/* Format Badges */}
+          <div className="horizontal-card-badges">
+            <span className={`badge-type ${resource.type}`}>{resource.type}</span>
+            <span className="badge-topic" onClick={handleTopicClick}>{resource.topic}</span>
+          </div>
+
+          {/* Footer details */}
+          <div className="horizontal-card-footer">
+            <span className="horizontal-card-time">◷ {getFormattedTime()}</span>
+            {resource.url && (
+              <span className="horizontal-card-url">
+                {resource.url.replace(/https?:\/\/(www\.)?/, '')}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Square link button at bottom right */}
+        {resource.url && (
+          <button 
+            className="horizontal-card-open-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(resource.url, '_blank');
+            }}
+            title="Open resource URL"
+          >
+            <ExternalLink size={14} color="#1A1A1A" strokeWidth={2} />
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Default Vertical Layout
   return (
     <div 
-      className="file-card-window animate-fade" 
+      className={`file-card-window animate-fade ${resource.area}`} 
       onClick={() => onSelect(resource)}
     >
       {/* File title bar */}
@@ -95,22 +171,22 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
         </div>
         
         {/* Window action controls (Edit / Delete) */}
-        <div className="file-card-controls">
+        <div className="file-card-controls" style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
           <button 
             type="button" 
-            className="file-card-dot edit" 
             onClick={(e) => { e.stopPropagation(); onEdit(resource); }}
             title="Edit file details"
+            style={{ padding: '0.2rem', cursor: 'pointer', border: 'none', background: 'none', display: 'flex', alignItems: 'center' }}
           >
-            ✏️
+            <Pencil size={14} color="#1A1A1A" strokeWidth={2} />
           </button>
           <button 
             type="button" 
-            className="file-card-dot close" 
             onClick={(e) => { e.stopPropagation(); onDelete(resource.id); }}
             title="Delete file"
+            style={{ padding: '0.2rem', cursor: 'pointer', border: 'none', background: 'none', display: 'flex', alignItems: 'center' }}
           >
-            ×
+            <Trash2 size={14} color="#1A1A1A" strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -143,13 +219,27 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
         </div>
         
         <div className="file-card-footer-info">
-          <span>{getFormattedTime()}</span>
+          <span>◷ {getFormattedTime()}</span>
           {resource.url && (
-            <span style={{ fontSize: '0.6rem', opacity: 0.8 }}>
-              {resource.url.replace(/https?:\/\/(www\.)?/, '').substring(0, 20)}...
+            <span className="file-card-url-text">
+              {resource.url.replace(/https?:\/\/(www\.)?/, '').substring(0, 16)}...
             </span>
           )}
         </div>
+
+        {/* Square link button at bottom right */}
+        {resource.url && (
+          <button 
+            className="vertical-card-open-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(resource.url, '_blank');
+            }}
+            title="Open resource URL"
+          >
+            <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
+          </button>
+        )}
       </div>
     </div>
   );

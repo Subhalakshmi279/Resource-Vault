@@ -11,6 +11,7 @@ export interface Resource {
   type: ResourceType; // Media format
   tags: string[];
   notes?: string;
+  description?: string;
   created_at: string;
   ai_confidence?: 'high' | 'medium' | 'low';
 }
