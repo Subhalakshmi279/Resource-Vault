@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { X, Image as ImageIcon, Trash2, Paperclip } from 'lucide-react';
+
+
+
+
 import type { Resource, AreaType, ResourceType } from '../types';
 import { PixelAlert } from './PixelIcons';
 import { Input } from './Input';
+import { isSupabaseConfigured } from '../supabaseClient';
+import { uploadFileToStorage } from '../services/storageService';
 
 
 
@@ -13,6 +19,8 @@ interface ResourceFormProps {
   onDelete?: (id: string) => void;
   editingResource?: Resource | null;
   existingResources: Resource[];
+  initialArea?: AreaType | null;
+  initialTopic?: string | null;
 }
 
 export const ResourceForm: React.FC<ResourceFormProps> = ({
@@ -21,7 +29,9 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
   onSave,
   onDelete,
   editingResource,
-  existingResources
+  existingResources,
+  initialArea,
+  initialTopic
 }) => {
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
@@ -35,8 +45,11 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
   const [tags, setTags] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [filePath, setFilePath] = useState<string | undefined>(undefined);
+  const [rawFile, setRawFile] = useState<File | null>(null);
+  const [imageError, setImageError] = useState(false);
   
   // URL check warning states
+
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [bypassDuplicate, setBypassDuplicate] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -73,7 +86,7 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
     }
   }, [area, editingResource]);
 
-  // Prepopulate form if editing
+  // Prepopulate form if editing or pre-select active area/topic when creating
   useEffect(() => {
     if (editingResource) {
       setTitle(editingResource.title);
@@ -101,20 +114,40 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
         setNewTopicText(editingResource.topic);
       }
     } else {
-      // Reset form fields
+      // Reset form fields with initialArea & initialTopic
+      const defaultArea = initialArea || 'career';
       setTitle('');
       setUrl('');
-      setArea('career');
+      setArea(defaultArea);
       setType('website');
       setTags([]);
       setNotes('');
       setFilePath(undefined);
       setDuplicateWarning(null);
       setBypassDuplicate(false);
-      setTopicSelection('create_new');
-      setNewTopicText('');
+
+      const topics = Array.from(
+        new Set(
+          existingResources
+            .filter(res => res.area === defaultArea && res.topic)
+            .map(res => res.topic)
+        )
+      );
+      if (initialTopic && topics.includes(initialTopic)) {
+        setTopicSelection(initialTopic);
+        setNewTopicText('');
+      } else if (initialTopic) {
+        setTopicSelection('create_new');
+        setNewTopicText(initialTopic);
+      } else if (topics.length > 0) {
+        setTopicSelection(topics[0]);
+        setNewTopicText('');
+      } else {
+        setTopicSelection('create_new');
+        setNewTopicText('');
+      }
     }
-  }, [editingResource, isOpen]);
+  }, [editingResource, isOpen, initialArea, initialTopic]);
 
   if (!isOpen) return null;
 
@@ -129,6 +162,7 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
       alert('File size exceeds 1.5MB limit. Please upload a smaller file.');
       return;
     }
+    setRawFile(file);
     const reader = new FileReader();
     reader.onload = (e) => {
       if (e.target?.result) {
@@ -167,7 +201,7 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
 
 
   // Submit and Validate
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
@@ -201,6 +235,17 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
       }
     }
 
+    let finalFilePath = filePath;
+    if (isSupabaseConfigured && rawFile) {
+      try {
+        finalFilePath = await uploadFileToStorage(rawFile);
+      } catch (err) {
+        console.error('Error uploading file to Supabase storage:', err);
+        alert('Failed to upload file to database storage.');
+        return;
+      }
+    }
+
     onSave({
       title: title.trim(),
       url: url.trim() || undefined,
@@ -209,7 +254,7 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
       type,
       tags,
       notes: notes.trim() || undefined,
-      file_path: filePath
+      file_path: finalFilePath
     });
     onClose();
   };
@@ -409,22 +454,38 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                   <div className="form-dropzone-preview-box">
-                    {filePath.startsWith('data:image/') ? (
-                      <img src={filePath} alt="Preview" className="form-dropzone-preview-image" />
+                    {!imageError && (filePath.startsWith('data:image/') || filePath.match(/\.(jpeg|jpg|gif|png|webp|svg)/i)) ? (
+                      <img 
+                        src={filePath} 
+                        alt="Preview" 
+                        className="form-dropzone-preview-image"
+                        onError={() => setImageError(true)} 
+                      />
                     ) : (
-                      <div style={{ padding: '1rem', background: '#F3F4F6', border: '1.5px dashed #9CA3AF', borderRadius: '6px', textAlign: 'center', fontSize: '0.8rem', width: '100%' }}>
-                        📎 File Attachment Loaded
+                      <div className="form-dropzone-attachment-badge">
+                        <Paperclip size={16} color="#1A1A1A" strokeWidth={2} />
+                        <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>
+                          {rawFile ? rawFile.name : 'File Attachment Loaded'}
+                        </span>
                       </div>
                     )}
                     <button
                       type="button"
                       className="form-dropzone-preview-delete"
-                      onClick={() => setFilePath(undefined)}
+                      onClick={() => {
+                        setFilePath(undefined);
+                        setRawFile(null);
+                        setImageError(false);
+                      }}
                       title="Remove file"
                     >
                       <X size={14} />
                     </button>
                   </div>
+
+
+
+
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '0.75rem', color: '#0d9488', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
                       <ImageIcon size={12} /> File attached
@@ -437,6 +498,8 @@ export const ResourceForm: React.FC<ResourceFormProps> = ({
                     >
                       Change file
                     </button>
+
+
                     <input
                       ref={fileInputRef}
                       type="file"

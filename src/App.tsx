@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import {
+
   Home,
+
   Heart,
   Briefcase,
   Laptop,
@@ -13,19 +15,36 @@ import {
   ExternalLink,
   ChevronRight,
   Trash2,
-  Pencil
+  Pencil,
+  MoreVertical,
+  Eye,
+  Copy,
+  FolderInput,
+  User
 } from 'lucide-react';
-import { ResourceForm } from './components/ResourceForm';
-import { Input } from './components/Input';
-import { INITIAL_RESOURCES } from './mockData';
-import type { Resource, AreaType, ResourceType } from './types';
-import { supabase, isSupabaseConfigured } from './supabaseClient';
 
-type ViewType = 'home' | 'area' | 'topic' | 'search' | 'detail' | 'all' | 'recent';
+import { ResourceForm } from './components/ResourceForm';
+import { PinModal } from './components/PinModal';
+import { FilePreviewModal } from './components/FilePreviewModal';
+import { RenameModal } from './components/RenameModal';
+import { DeleteConfirmationModal } from './components/DeleteConfirmationModal';
+import { Input } from './components/Input';
+import type { Resource, AreaType, ResourceType, Subtopic } from './types';
+import { isSupabaseConfigured } from './supabaseClient';
+import { fetchResourcesFromDb, insertResourceToDb, updateResourceInDb, deleteResourceFromDb, deleteMultipleResourcesFromDb, bulkMoveResourcesInDb } from './services/resourceService';
+import { fetchHomePinsFromDb, fetchSubtopicPinsFromDb, saveHomePinInDb, saveSubtopicPinInDb } from './services/pinService';
+import { getStoragePublicUrl } from './services/storageService';
+import { renameSubtopicInDb, renameAreaInDb, deleteSubtopicInDb, deleteAreaInDb } from './services/organizationService';
+import { fetchSubtopicsFromDb, createSubtopicInDb } from './services/subtopicService';
+
+type ViewType = 'home' | 'area' | 'topic' | 'search' | 'detail' | 'all' | 'recent' | 'profile' | 'recycle_bin';
+
 
 function App() {
   // Resources Database Store
   const [resources, setResources] = useState<Resource[]>([]);
+  const [subtopics, setSubtopics] = useState<Subtopic[]>([]);
+  const [dbError, setDbError] = useState<string | null>(null);
 
   // Navigation View Router
   const [activeView, setActiveView] = useState<ViewType>('home');
@@ -43,13 +62,47 @@ function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingResource, setEditingResource] = useState<Resource | null>(null);
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
+  const [previewingResource, setPreviewingResource] = useState<Resource | null>(null);
+
+  // Toast Notification State
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isToastFading, setIsToastFading] = useState(false);
+
+  const triggerToast = (message: string) => {
+    setToastMessage(message);
+    setIsToastFading(false);
+
+    // Fade out at 1.0s, remove completely at 1.35s
+    setTimeout(() => {
+      setIsToastFading(true);
+    }, 1000);
+
+    setTimeout(() => {
+      setToastMessage(null);
+      setIsToastFading(false);
+    }, 1350);
+  };
+
+
+
+  // Organization Menu & Modal States
+  const [activeDropdownKey, setActiveDropdownKey] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{ type: 'subtopic' | 'area'; name: string; area?: AreaType } | null>(null);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ type: 'subtopic' | 'area'; name: string; area?: AreaType } | null>(null);
+
+  // Close active dropdown menu when clicking anywhere on page
+  useEffect(() => {
+    const handleDocumentClick = () => setActiveDropdownKey(null);
+    window.addEventListener('click', handleDocumentClick);
+    return () => window.removeEventListener('click', handleDocumentClick);
+  }, []);
 
   // Table Selection & Pagination States
   const [selectedResources, setSelectedResources] = useState<string[]>([]);
   const [currentPageTopic, setCurrentPageTopic] = useState(1);
   const [deletingMultipleResources, setDeletingMultipleResources] = useState(false);
 
-  // Recently Visited Subtopics State (Internal history tracking)
+  // Recently Visited Subtopics State (Internal history tracking - device-local UI preference)
   const [recentlyVisited, setRecentlyVisited] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('catalog_recently_visited');
@@ -59,23 +112,8 @@ function App() {
     }
   });
 
-  const [homePinnedIds, setHomePinnedIds] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('resourceVault_homePinnedIds');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [subtopicPinnedMap, setSubtopicPinnedMap] = useState<Record<string, string[]>>(() => {
-    try {
-      const saved = localStorage.getItem('resourceVault_subtopicPinnedMap');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [homePinnedIds, setHomePinnedIds] = useState<string[]>([]);
+  const [subtopicPinnedMap, setSubtopicPinnedMap] = useState<Record<string, string[]>>({});
 
   // Pin destination modal states
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
@@ -84,19 +122,13 @@ function App() {
   // Bulk Move States
   const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
   const [moveToArea, setMoveToArea] = useState<AreaType | ''>('');
+  const [moveTopicSelection, setMoveTopicSelection] = useState<string>('create_new');
   const [moveToSubtopic, setMoveToSubtopic] = useState<string>('');
+
 
   useEffect(() => {
     localStorage.setItem('catalog_recently_visited', JSON.stringify(recentlyVisited));
   }, [recentlyVisited]);
-
-  useEffect(() => {
-    localStorage.setItem('resourceVault_homePinnedIds', JSON.stringify(homePinnedIds));
-  }, [homePinnedIds]);
-
-  useEffect(() => {
-    localStorage.setItem('resourceVault_subtopicPinnedMap', JSON.stringify(subtopicPinnedMap));
-  }, [subtopicPinnedMap]);
 
   // Clean stale pin references if resources change or are deleted
   useEffect(() => {
@@ -132,50 +164,35 @@ function App() {
     });
   }, [resources]);
 
-  // 1. Initial Load: Seed mock data or fetch from Supabase
+  // 1. Initial Load: Exclusively fetch from Supabase
   useEffect(() => {
     const loadResources = async () => {
-      if (isSupabaseConfigured) {
-        try {
-          const { data, error } = await supabase
-            .from('resources')
-            .select('*')
-            .order('created_at', { ascending: false });
-          if (error) throw error;
-          if (data) {
-            setResources(data as Resource[]);
-          }
-        } catch (err) {
-          console.error('Error fetching resources from Supabase:', err);
-          // Fallback to local storage if query fails
-          const savedResources = localStorage.getItem('catalog_resources');
-          if (savedResources) {
-            try {
-              setResources(JSON.parse(savedResources));
-            } catch {
-              setResources(INITIAL_RESOURCES);
-            }
-          } else {
-            setResources(INITIAL_RESOURCES);
-            localStorage.setItem('catalog_resources', JSON.stringify(INITIAL_RESOURCES));
-          }
-        }
-      } else {
-        const savedResources = localStorage.getItem('catalog_resources');
-        if (savedResources) {
-          try {
-            setResources(JSON.parse(savedResources));
-          } catch {
-            setResources(INITIAL_RESOURCES);
-          }
-        } else {
-          setResources(INITIAL_RESOURCES);
-          localStorage.setItem('catalog_resources', JSON.stringify(INITIAL_RESOURCES));
-        }
+      if (!isSupabaseConfigured) {
+        setDbError('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.');
+        return;
+      }
+
+      try {
+        setDbError(null);
+        const list = await fetchResourcesFromDb();
+        setResources(list);
+
+        const subtopicsList = await fetchSubtopicsFromDb();
+        setSubtopics(subtopicsList);
+
+        const homePins = await fetchHomePinsFromDb();
+        setHomePinnedIds(homePins);
+
+        const subtopicPins = await fetchSubtopicPinsFromDb();
+        setSubtopicPinnedMap(subtopicPins);
+      } catch (err: any) {
+        console.error('Error loading data from Supabase:', err);
+        setDbError(err?.message || 'Failed to connect to Supabase database.');
       }
     };
     loadResources();
   }, []);
+
 
 
   const handleReturnFromSearch = () => {
@@ -194,110 +211,137 @@ function App() {
 
   // Helper: Collect unique Topics from the catalog for a specific Area
   const getUniqueTopicsListForArea = (areaKey: AreaType) => {
+    const dbTopics = subtopics.filter(s => s.area === areaKey).map(s => s.name);
+    const resourceTopics = resources.filter(res => res.area === areaKey).map(res => res.topic);
     const topics = Array.from(
-      new Set(resources.filter(res => res.area === areaKey).map(res => res.topic))
+      new Set([...dbTopics, ...resourceTopics])
     ).filter(Boolean);
     return topics.sort((a, b) => a.localeCompare(b));
   };
 
   // Save resource (Insert or Edit)
   const handleSaveResource = async (resourceData: Omit<Resource, 'id' | 'created_at'>) => {
-    if (isSupabaseConfigured) {
-      try {
-        if (editingResource) {
-          // Edit in Supabase
-          const { error } = await supabase
-            .from('resources')
-            .update({
-              title: resourceData.title,
-              url: resourceData.url,
-              file_path: resourceData.file_path,
-              area: resourceData.area,
-              topic: resourceData.topic,
-              type: resourceData.type,
-              tags: resourceData.tags,
-              notes: resourceData.notes,
-              ai_confidence: resourceData.ai_confidence
-            })
-            .eq('id', editingResource.id);
-          if (error) throw error;
+    try {
+      let subtopicObj = subtopics.find(s => s.area === resourceData.area && s.name.toLowerCase() === resourceData.topic.trim().toLowerCase());
+      if (!subtopicObj && resourceData.topic && resourceData.topic.trim()) {
+        try {
+          subtopicObj = await createSubtopicInDb(resourceData.area, resourceData.topic.trim());
+        } catch (sErr) {
+          console.warn('Subtopic creation info:', sErr);
+        }
+      }
 
-          const updated = resources.map(res => 
-            res.id === editingResource.id 
-              ? { ...res, ...resourceData }
-              : res
-          );
-          setResources(updated);
-          if (selectedResource && selectedResource.id === editingResource.id) {
-            setSelectedResource({ ...selectedResource, ...resourceData });
-          }
-        } else {
-          // Insert in Supabase
-          const { data, error } = await supabase
-            .from('resources')
-            .insert([resourceData])
-            .select();
-          if (error) throw error;
-          if (data && data[0]) {
-            setResources([data[0] as Resource, ...resources]);
-          }
-        }
-      } catch (err) {
-        console.error('Error saving resource in Supabase:', err);
-        alert('Failed to save to Supabase. Falling back to local copy.');
-      }
-    } else {
-      // Local fallback
-      let updated: Resource[];
+      const payload = {
+        ...resourceData,
+        topic: resourceData.topic.trim(),
+        subtopic_id: subtopicObj?.id
+      };
+
       if (editingResource) {
-        updated = resources.map(res => 
-          res.id === editingResource.id 
-            ? { ...res, ...resourceData }
-            : res
-        );
-        if (selectedResource && selectedResource.id === editingResource.id) {
-          setSelectedResource({ ...selectedResource, ...resourceData });
-        }
+        await updateResourceInDb(editingResource.id, payload);
       } else {
-        const newResource: Resource = {
-          ...resourceData,
-          id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 11),
-          created_at: new Date().toISOString()
-        };
-        updated = [newResource, ...resources];
+        await insertResourceToDb(payload);
       }
-      setResources(updated);
-      localStorage.setItem('catalog_resources', JSON.stringify(updated));
+
+      const refreshedResources = await fetchResourcesFromDb();
+      setResources(refreshedResources);
+      const refreshedSubtopics = await fetchSubtopicsFromDb();
+      setSubtopics(refreshedSubtopics);
+
+      if (selectedResource && editingResource && selectedResource.id === editingResource.id) {
+        const updatedSel = refreshedResources.find(r => r.id === editingResource.id);
+        if (updatedSel) setSelectedResource(updatedSel);
+      }
+    } catch (err) {
+      console.error('Error saving resource in Supabase:', err);
+      alert('Failed to save to Supabase.');
     }
 
     setEditingResource(null);
     setIsFormOpen(false);
-
+    triggerToast('Resource saved!');
   };
+
+
 
   // Delete Resource
   const handleDeleteResource = async (id: string) => {
-    if (isSupabaseConfigured) {
-      try {
-        const { error } = await supabase
-          .from('resources')
-          .delete()
-          .eq('id', id);
-        if (error) throw error;
-        setResources(resources.filter(res => res.id !== id));
-      } catch (err) {
-        console.error('Error deleting resource from Supabase:', err);
-        alert('Failed to delete from Supabase.');
-      }
-    } else {
-      const updated = resources.filter(res => res.id !== id);
-      setResources(updated);
-      localStorage.setItem('catalog_resources', JSON.stringify(updated));
+    try {
+      await deleteResourceFromDb(id);
+      setResources(resources.filter(res => res.id !== id));
+    } catch (err) {
+      console.error('Error deleting resource from Supabase:', err);
+      alert('Failed to delete from Supabase.');
     }
 
     setDeletingResourceId(null);
     if (selectedResource && selectedResource.id === id) {
       setSelectedResource(null);
+    }
+  };
+
+  const handleSavePinSettings = async (homePinned: boolean, subtopicPinned: boolean) => {
+    if (!pinTargetResourceId) return;
+    const targetResource = resources.find(r => r.id === pinTargetResourceId);
+    if (!targetResource) return;
+    const subtopicKey = targetResource.topic;
+
+    try {
+      const subtopicId = targetResource.subtopic_id;
+      await saveHomePinInDb(pinTargetResourceId, homePinned);
+      await saveSubtopicPinInDb(pinTargetResourceId, subtopicKey, subtopicPinned, subtopicId);
+    } catch (err) {
+      console.error('Error saving pin configurations in Supabase:', err);
+      alert('Failed to save pins to database.');
+    }
+
+    // Update in-memory state
+    setHomePinnedIds(prev => {
+      const isAlready = prev.includes(pinTargetResourceId);
+      if (homePinned && !isAlready) {
+        return [...prev, pinTargetResourceId];
+      }
+      if (!homePinned && isAlready) {
+        return prev.filter(id => id !== pinTargetResourceId);
+      }
+      return prev;
+    });
+
+    setSubtopicPinnedMap(prev => {
+      const currentList = prev[subtopicKey] || [];
+      const isAlready = currentList.includes(pinTargetResourceId);
+      let nextList = currentList;
+      if (subtopicPinned && !isAlready) {
+        nextList = [...currentList, pinTargetResourceId];
+      } else if (!subtopicPinned && isAlready) {
+        nextList = currentList.filter(id => id !== pinTargetResourceId);
+      }
+      return {
+        ...prev,
+        [subtopicKey]: nextList
+      };
+    });
+
+    setIsPinModalOpen(false);
+    setPinTargetResourceId(null);
+    setSelectedResources([]);
+  };
+
+  const handleOpenResource = (resource: Resource) => {
+    if (resource.url) {
+      window.open(resource.url, '_blank');
+    } else if (resource.file_path) {
+      if (resource.file_path.startsWith('data:')) {
+        const win = window.open();
+        if (win) {
+          win.document.write(`<iframe src="${resource.file_path}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+        }
+      } else {
+        const runtimeUrl = getStoragePublicUrl(resource.file_path);
+        if (runtimeUrl) {
+          window.open(runtimeUrl, '_blank');
+        }
+      }
     }
   };
 
@@ -375,50 +419,159 @@ function App() {
   const handleConfirmDeleteMultiple = async () => {
     if (selectedResources.length === 0) return;
     try {
-      if (isSupabaseConfigured) {
-        const { error } = await supabase
-          .from('resources')
-          .delete()
-          .in('id', selectedResources);
-        if (error) throw error;
-      }
+      await deleteMultipleResourcesFromDb(selectedResources);
       setResources(prev => prev.filter(res => !selectedResources.includes(res.id)));
       setSelectedResources([]);
       setDeletingMultipleResources(false);
     } catch (err) {
       console.error("Error deleting multiple resources:", err);
+      alert('Failed to delete selected resources.');
+    }
+  };
+
+  const handleSaveRename = async (newName: string) => {
+    if (!renameTarget) return;
+
+    if (renameTarget.type === 'subtopic' && renameTarget.area) {
+      const oldName = renameTarget.name;
+      const area = renameTarget.area;
+      const targetSubtopicObj = subtopics.find(s => s.area === area && s.name === oldName);
+
+      await renameSubtopicInDb(oldName, newName, area, targetSubtopicObj?.id);
+
+      setSubtopics(prev => prev.map(s => 
+        (s.area === area && s.name === oldName) ? { ...s, name: newName.trim() } : s
+      ));
+
+      setResources(prev => prev.map(r => 
+        (r.area === area && r.topic === oldName) ? { ...r, topic: newName.trim() } : r
+      ));
+
+      setSubtopicPinnedMap(prev => {
+        const next = { ...prev };
+        if (next[oldName]) {
+          next[newName] = next[oldName];
+          delete next[oldName];
+        }
+        return next;
+      });
+
+      if (activeTopicString === oldName) {
+        setActiveTopicString(newName);
+      }
+    } else if (renameTarget.type === 'area') {
+      const oldArea = renameTarget.name;
+
+      await renameAreaInDb(oldArea, newName);
+
+      setResources(prev => prev.map(r => 
+        r.area === oldArea ? { ...r, area: newName as any } : r
+      ));
+
+      if (activeArea === oldArea) {
+        setActiveArea(newName as any);
+      }
+    }
+  };
+
+  const handleSaveDelete = async () => {
+    if (!deleteConfirmTarget) return;
+
+    if (deleteConfirmTarget.type === 'subtopic' && deleteConfirmTarget.area) {
+      const topicName = deleteConfirmTarget.name;
+      const area = deleteConfirmTarget.area;
+      const targetSubtopicObj = subtopics.find(s => s.area === area && s.name === topicName);
+      const matchingResources = resources.filter(r => r.area === area && r.topic === topicName);
+      const idsToDelete = matchingResources.map(r => r.id);
+
+      await deleteSubtopicInDb(topicName, area, resources, targetSubtopicObj?.id);
+
+      setSubtopics(prev => prev.filter(s => !(s.area === area && s.name === topicName)));
+      setResources(prev => prev.filter(r => !idsToDelete.includes(r.id)));
+      setHomePinnedIds(prev => prev.filter(id => !idsToDelete.includes(id)));
+      setSubtopicPinnedMap(prev => {
+        const next = { ...prev };
+        delete next[topicName];
+        return next;
+      });
+      setSelectedResources(prev => prev.filter(id => !idsToDelete.includes(id)));
+
+      if (activeTopicString === topicName) {
+        setActiveView('area');
+        setActiveTopicString(null);
+      }
+    } else if (deleteConfirmTarget.type === 'area') {
+      const area = deleteConfirmTarget.name;
+      const matchingResources = resources.filter(r => r.area === area);
+      const idsToDelete = matchingResources.map(r => r.id);
+
+      await deleteAreaInDb(area, resources);
+
+      setResources(prev => prev.filter(r => !idsToDelete.includes(r.id)));
+      setHomePinnedIds(prev => prev.filter(id => !idsToDelete.includes(id)));
+      setSelectedResources(prev => prev.filter(id => !idsToDelete.includes(id)));
+
+      if (activeArea === area) {
+        handleGoHome();
+      }
+    }
+  };
+
+  const handleMoveAreaChange = (newArea: AreaType) => {
+    setMoveToArea(newArea);
+    const topics = getUniqueTopicsListForArea(newArea);
+    if (topics.length > 0) {
+      setMoveTopicSelection(topics[0]);
+      setMoveToSubtopic('');
+    } else {
+      setMoveTopicSelection('create_new');
+      setMoveToSubtopic('');
     }
   };
 
   const handleConfirmMoveSelected = async () => {
-    if (selectedResources.length === 0 || !moveToArea || !moveToSubtopic.trim()) return;
+    let targetSubtopicName = '';
+    if (moveTopicSelection === 'create_new') {
+      targetSubtopicName = moveToSubtopic.trim();
+    } else {
+      targetSubtopicName = moveTopicSelection.trim();
+    }
+
+    if (selectedResources.length === 0 || !moveToArea || !targetSubtopicName) return;
     try {
-      if (isSupabaseConfigured) {
-        const { error } = await supabase
-          .from('resources')
-          .update({ area: moveToArea, topic: moveToSubtopic.trim() })
-          .in('id', selectedResources);
-        if (error) throw error;
+      targetSubtopicName = targetSubtopicName.charAt(0).toUpperCase() + targetSubtopicName.slice(1);
+      let subtopicObj = subtopics.find(s => s.area === moveToArea && s.name.toLowerCase() === targetSubtopicName.toLowerCase());
+      
+      if (!subtopicObj) {
+        try {
+          subtopicObj = await createSubtopicInDb(moveToArea, targetSubtopicName);
+        } catch (sErr) {
+          console.warn('Subtopic creation info:', sErr);
+        }
       }
-      setResources(prev => 
-        prev.map(res => 
-          selectedResources.includes(res.id) 
-            ? { ...res, area: moveToArea, topic: moveToSubtopic.trim() } 
-            : res
-        )
-      );
+
+      await bulkMoveResourcesInDb(selectedResources, moveToArea, targetSubtopicName, subtopicObj?.id);
+
+      const refreshedResources = await fetchResourcesFromDb();
+      setResources(refreshedResources);
+      const refreshedSubtopics = await fetchSubtopicsFromDb();
+      setSubtopics(refreshedSubtopics);
+
+      const movedCount = selectedResources.length;
       setSelectedResources([]);
       setIsMoveModalOpen(false);
+      triggerToast(`Moved ${movedCount} items to ${targetSubtopicName}`);
       
-      // Track newly created subtopic in recently visited automatically
       setRecentlyVisited(prev => {
-        const filtered = prev.filter(t => t !== moveToSubtopic.trim());
-        return [moveToSubtopic.trim(), ...filtered].slice(0, 5);
+        const filtered = prev.filter(t => t !== targetSubtopicName);
+        return [targetSubtopicName, ...filtered].slice(0, 5);
       });
     } catch (err) {
       console.error("Error moving multiple resources:", err);
+      alert('Failed to move selected resources.');
     }
   };
+
 
   const handleEditSelected = () => {
     if (selectedResources.length !== 1) return;
@@ -428,6 +581,30 @@ function App() {
       setIsFormOpen(true);
     }
   };
+
+  const handleCopySelectedLinks = () => {
+    if (selectedResources.length === 0) return;
+    
+    const targets = resources.filter(res => selectedResources.includes(res.id));
+    const validLinks = targets.filter(res => res.url && res.url.trim().length > 0);
+    
+    if (validLinks.length === 0) {
+      triggerToast('No valid URL links in selection');
+      return;
+    }
+
+    if (validLinks.length === 1) {
+      navigator.clipboard.writeText(validLinks[0].url!);
+      triggerToast('Resource link copied to clipboard!');
+    } else {
+      const textList = validLinks.map(res => `• ${res.title}: ${res.url}`).join('\n');
+      navigator.clipboard.writeText(textList);
+      triggerToast(`Copied ${validLinks.length} links to clipboard!`);
+    }
+  };
+
+
+
 
 
 
@@ -559,19 +736,47 @@ function App() {
         return 'search_results.exe';
       case 'detail':
         return `${selectedResource?.title.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20) || 'detail'}.txt`;
+      case 'profile':
+        return 'user_profile.cfg';
+      case 'recycle_bin':
+        return 'recycle_bin.exe';
       default:
         return 'vault.exe';
+
     }
   };
 
   const renderRefinedResourceTable = (resourcesList: Resource[]) => {
     if (resourcesList.length === 0) {
+      const getEmptyTitle = () => {
+        if (searchQuery || activeView === 'search') return '📁 Search Results';
+        if (activeView === 'topic') return `📁 ${activeTopicString || 'Subtopic'}`;
+        if (activeView === 'area') return `📁 ${getAreaNameReadable(activeArea)}`;
+        return '📁 No Resources';
+      };
+
+      const getEmptyMessage = () => {
+        if (searchQuery) return `No resources match "${searchQuery}".`;
+        if (selectedType !== 'all') return `No ${selectedType} resources found in this filter.`;
+        if (activeView === 'topic') return `No resources added to "${activeTopicString}" yet.`;
+        if (activeView === 'area') return `No resources added to "${getAreaNameReadable(activeArea)}" yet.`;
+        return 'No resources found in this collection.';
+      };
+
+      const getButtonBgColor = () => {
+        if (activeArea === 'career') return '#10B981';
+        if (activeArea === 'computer') return '#2563EB';
+        if (activeArea === 'ai_tech') return '#7C3AED';
+        if (activeArea === 'personal') return '#E11D48';
+        return '#7C3AED';
+      };
+
       return (
         <div className="quiet-empty-state" style={{ padding: '2rem 1rem', display: 'flex', justifyContent: 'center' }}>
-          <div className="modal-sheet" style={{ maxWidth: '340px', width: '100%', position: 'static', transform: 'none', margin: '0 auto' }}>
+          <div className="modal-sheet" style={{ maxWidth: '360px', width: '100%', position: 'static', transform: 'none', margin: '0 auto' }}>
             <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
               <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
-                <span>📁 Search Results</span>
+                <span>{getEmptyTitle()}</span>
               </h3>
               <button 
                 type="button"
@@ -585,9 +790,9 @@ function App() {
               </button>
             </div>
 
-            <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'center' }}>
+            <div style={{ padding: '0.5rem 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'center' }}>
               <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0, fontWeight: 600 }}>
-                No resources match your search or filter criteria.
+                {getEmptyMessage()}
               </p>
             </div>
 
@@ -602,7 +807,7 @@ function App() {
                 }}
                 style={{
                   width: '100%',
-                  backgroundColor: '#7C3AED',
+                  backgroundColor: getButtonBgColor(),
                   color: '#FFFFFF',
                   border: '2px solid #1A1A1A',
                   boxShadow: '2px 2px 0px #1A1A1A'
@@ -615,6 +820,7 @@ function App() {
         </div>
       );
     }
+
 
     const ITEMS_PER_PAGE = 10;
     const totalItems = resourcesList.length;
@@ -650,25 +856,48 @@ function App() {
               <button 
                 type="button"
                 className="refined-toolbar-btn" 
+                onClick={handleCopySelectedLinks}
+                disabled={selectedResources.length === 0}
+                title={selectedResources.length > 1 ? "Copy selected links" : "Copy link"}
+              >
+                <Copy size={15} color="#1A1A1A" strokeWidth={2} />
+              </button>
+
+              <button 
+                type="button"
+                className="refined-toolbar-btn" 
+                onClick={() => {
+                  const targetArea = activeArea || 'career';
+                  handleMoveAreaChange(targetArea);
+                  setIsMoveModalOpen(true);
+                }}
+                disabled={selectedResources.length === 0}
+                title="Move selected resources to another area/subtopic"
+              >
+                <FolderInput size={15} color="#1A1A1A" strokeWidth={2} />
+              </button>
+
+              <button 
+                type="button"
+                className="refined-toolbar-btn" 
                 onClick={() => setDeletingMultipleResources(true)}
                 disabled={selectedResources.length === 0}
+                title="Delete selected resources"
               >
-                <Trash2 size={13} style={{ marginRight: '0.2rem' }} />
-                <span>Delete</span>
+                <Trash2 size={15} color="#1A1A1A" strokeWidth={2} />
               </button>
               
-              {selectedResources.length <= 1 ? (
+              {selectedResources.length === 1 && (
                 <>
                   <button 
                     type="button"
                     className="refined-toolbar-btn" 
                     onClick={handleEditSelected}
-                    disabled={selectedResources.length !== 1}
+                    title="Edit resource"
                   >
-                    <Pencil size={13} style={{ marginRight: '0.2rem' }} />
-                    <span>Edit</span>
+                    <Pencil size={15} color="#1A1A1A" strokeWidth={2} />
                   </button>
-                  {selectedResources.length === 1 && (() => {
+                  {(() => {
                     const selectedId = selectedResources[0];
                     const isHomePinned = homePinnedIds.includes(selectedId);
                     const isSubtopicPinned = activeTopicString ? (subtopicPinnedMap[activeTopicString] || []).includes(selectedId) : false;
@@ -681,29 +910,17 @@ function App() {
                           setPinTargetResourceId(selectedId);
                           setIsPinModalOpen(true);
                         }}
+                        title={isPinnedAnywhere ? "Unpin resource" : "Pin resource"}
                       >
-                        <span style={{ marginRight: '0.2rem' }}>{isPinnedAnywhere ? '📍' : '📌'}</span>
-                        <span>{isPinnedAnywhere ? 'Unpin' : 'Pin'}</span>
+                        <span style={{ fontSize: '0.9rem', display: 'inline-flex', alignItems: 'center' }}>{isPinnedAnywhere ? '📍' : '📌'}</span>
                       </button>
                     );
                   })()}
                 </>
-              ) : (
-                <button 
-                  type="button"
-                  className="refined-toolbar-btn" 
-                  onClick={() => {
-                    // Pre-fill target area with current active area
-                    setMoveToArea(activeArea || '');
-                    setMoveToSubtopic('');
-                    setIsMoveModalOpen(true);
-                  }}
-                >
-                  <Folder size={13} style={{ marginRight: '0.2rem' }} />
-                  <span>Move</span>
-                </button>
               )}
+
             </div>
+
           </div>
           {selectedResources.length > 0 && (
             <button 
@@ -717,14 +934,14 @@ function App() {
         </div>
 
         {/* Excel-like Resource Table */}
-        <section style={{ overflowX: 'auto' }}>
-          <table className="refined-table">
+        <section style={{ width: '100%', overflowX: 'hidden' }}>
+          <table className="refined-table" style={{ width: '100%', tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th style={{ width: '10px', textAlign: 'center', padding: 0 }}>
+                <th style={{ width: '6px', textAlign: 'center', padding: 0 }}>
                   {/* Stripes */}
                 </th>
-                <th style={{ width: '40px', textAlign: 'center' }}>
+                <th style={{ width: '36px', textAlign: 'center' }}>
                   <input 
                     type="checkbox" 
                     className="table-checkbox"
@@ -732,10 +949,10 @@ function App() {
                     onChange={() => handleToggleSelectAll(paginatedResources)}
                   />
                 </th>
-                <th>Name</th>
-                <th style={{ width: '120px' }}>Type</th>
-                <th style={{ width: '150px' }}>Added</th>
-                <th style={{ width: '60px', textAlign: 'center' }}>Link</th>
+                <th style={{ width: 'auto' }}>Name</th>
+                <th style={{ width: '90px' }}>Type</th>
+                <th style={{ width: '80px' }}>Added</th>
+                <th style={{ width: '85px', textAlign: 'center' }}>ACTIONS</th>
               </tr>
             </thead>
             <tbody>
@@ -744,7 +961,7 @@ function App() {
                 const sanitizedFilename = resource.title
                   .toLowerCase()
                   .replace(/[^a-z0-9]+/g, '_')
-                  .substring(0, 18);
+                  .substring(0, 24);
 
                 const getRecentFileEmoji = (type: string) => {
                   switch (type) {
@@ -781,8 +998,8 @@ function App() {
                     className={`resource-row ${isSelected ? 'selected' : ''}`}
                     onClick={() => handleToggleSelectRow(resource.id)}
                   >
-                    <td style={{ padding: 0, width: '4px' }}>
-                      <div className={`recent-file-stripe ${resource.area}`} style={{ height: '42px', margin: '0 auto' }} />
+                    <td style={{ padding: 0, width: '6px' }}>
+                      <div className={`recent-file-stripe ${resource.area}`} style={{ height: '44px', margin: '0 auto' }} />
                     </td>
                     <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                       <input 
@@ -792,20 +1009,35 @@ function App() {
                         onChange={() => handleToggleSelectRow(resource.id)}
                       />
                     </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <div className={`recent-file-icon-box ${resource.area}`} style={{ width: '34px', height: '34px', fontSize: '0.95rem' }}>
+                    <td style={{ overflow: 'hidden' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                        <div className={`recent-file-icon-box ${resource.area}`} style={{ width: '32px', height: '32px', fontSize: '0.9rem', flexShrink: 0 }}>
                           <span>{getRecentFileEmoji(resource.type)}</span>
                         </div>
-                        <div className="recent-file-meta">
-                          <span className="recent-file-name" style={{ fontSize: '0.85rem' }}>
+                        <div className="recent-file-meta" style={{ overflow: 'hidden', minWidth: 0 }}>
+                          <span className="recent-file-name" style={{ fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>
                             {sanitizedFilename}{getFileExtension(resource.type)}
                             {activeTopicString && (subtopicPinnedMap[activeTopicString] || []).includes(resource.id) && (
                               <span style={{ marginLeft: '0.35rem', fontSize: '0.75rem' }} title="Pinned to this Subtopic">📌</span>
                             )}
                           </span>
-                          <span className="recent-file-subtext" style={{ fontSize: '0.7rem' }}>{getDomain(resource.url) || 'local_file'}</span>
-                          <span className="recent-file-subtext" style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '0.05rem' }}>{resource.description || resource.notes || 'No description'}</span>
+                          <span 
+                            style={{
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden',
+                              wordBreak: 'break-word',
+                              whiteSpace: 'normal',
+                              fontSize: '0.72rem',
+                              color: '#64748B',
+                              marginTop: '0.1rem',
+                              lineHeight: '1.3'
+                            }}
+                            title={resource.description || resource.notes || getDomain(resource.url) || ''}
+                          >
+                            {resource.description || resource.notes || getDomain(resource.url) || 'No description'}
+                          </span>
                         </div>
                       </div>
                     </td>
@@ -814,19 +1046,60 @@ function App() {
                         {resource.type}
                       </span>
                     </td>
-                    <td>{getRelativeTimeString(resource.created_at)}</td>
+                    <td style={{ fontSize: '0.75rem', color: '#64748B' }}>{getRelativeTimeString(resource.created_at)}</td>
                     <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
-                      {resource.url && (
-                        <button 
-                          className="recent-file-link-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(resource.url, '_blank');
-                          }}
-                        >
-                          <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
-                        </button>
-                      )}
+                      <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'center', alignItems: 'center' }}>
+                        {resource.file_path && (
+                          <button 
+                            type="button"
+                            title="View file"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPreviewingResource(resource);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '0.25rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px'
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                          >
+                            <Eye size={16} color="#1A1A1A" strokeWidth={2} />
+                          </button>
+                        )}
+                        {resource.url && (
+                          <button 
+                            type="button"
+                            title="Open external URL"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open(resource.url, '_blank');
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '0.25rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px'
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                          >
+                            <ExternalLink size={16} color="#1A1A1A" strokeWidth={2} />
+                          </button>
+                        )}
+
+
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1002,8 +1275,51 @@ function App() {
     );
   };
 
+  if (dbError || !isSupabaseConfigured) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', backgroundColor: '#F8FAFC' }}>
+        <div style={{
+          maxWidth: '480px',
+          width: '100%',
+          backgroundColor: '#FFFFFF',
+          border: '2px solid #1A1A1A',
+          borderRadius: '12px',
+          padding: '2rem',
+          boxShadow: '4px 4px 0px #1A1A1A',
+          textAlign: 'center'
+        }}>
+          <div style={{ display: 'inline-flex', padding: '1rem', backgroundColor: '#FEE2E2', border: '2px solid #1A1A1A', borderRadius: '50%', marginBottom: '1.25rem' }}>
+            <AlertCircle size={36} color="#DC2626" strokeWidth={2} />
+          </div>
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 700, color: '#1A1A1A', marginBottom: '0.75rem' }}>
+            Database Connection Required
+          </h2>
+          <p style={{ fontSize: '0.9rem', color: '#475569', lineHeight: '1.5', marginBottom: '1.5rem' }}>
+            {dbError || 'Supabase is not configured or reachable. Please check your VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY environment variables.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '0.6rem 1.25rem',
+              backgroundColor: '#FEF08A',
+              border: '2px solid #1A1A1A',
+              borderRadius: '8px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '2px 2px 0px #1A1A1A'
+            }}
+          >
+            Retry Connection
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
+
 
       <div className="app-layout-wrapper">
       
@@ -1023,7 +1339,7 @@ function App() {
             <span className="sidebar-logo-highlighted">Resource Vault <span style={{ color: '#7C3AED', marginLeft: '0.2rem' }}>✦</span></span>
           </div>
 
-          {/* Home Button */}
+          {/* Sidebar Menu Items */}
           <div className="sidebar-menu-list">
             <div 
               className={`sidebar-item generic ${activeView === 'home' ? 'active' : ''}`}
@@ -1032,28 +1348,40 @@ function App() {
               <span className="sidebar-item-icon"><Home size={16} color="#1A1A1A" strokeWidth={2} /></span>
               <span>Home</span>
             </div>
+
+            <div 
+              className={`sidebar-item generic ${activeView === 'recycle_bin' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveView('recycle_bin');
+                setActiveArea(null);
+                setActiveTopicString(null);
+                setSelectedResource(null);
+              }}
+            >
+              <span className="sidebar-item-icon"><Trash2 size={16} color="#1A1A1A" strokeWidth={2} /></span>
+              <span>Recycle Bin</span>
+            </div>
+
+            <div 
+              className={`sidebar-item generic ${activeView === 'profile' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveView('profile');
+                setActiveArea(null);
+                setActiveTopicString(null);
+                setSelectedResource(null);
+              }}
+            >
+              <span className="sidebar-item-icon"><User size={16} color="#1A1A1A" strokeWidth={2} /></span>
+              <span>Profile</span>
+            </div>
           </div>
 
-          {/* AREAS Section */}
-          <div className="sidebar-section-title">Areas</div>
-          <div className="sidebar-menu-list">
-            {(['career', 'computer', 'ai_tech', 'personal'] as AreaType[]).map(areaKey => (
-              <div 
-                key={areaKey} 
-                className={`sidebar-item ${areaKey} ${activeView === 'area' && activeArea === areaKey ? 'active' : ''}`}
-                onClick={() => handleGoToArea(areaKey)}
-              >
-                <span className="sidebar-item-icon">{getAreaIcon(areaKey)}</span>
-                <span>{getAreaNameReadable(areaKey)}</span>
-              </div>
-            ))}
-          </div>
 
-          {/* Brand Box Sticker */}
-          <div className="sidebar-brand-box">
-            <span style={{ fontSize: '1rem', color: '#7C3AED' }}>✦</span>
-            <span style={{ textAlign: 'left' }}>ORGANIZE. SAVE.<br/>GROW. REPEAT.</span>
-          </div>
+
+
+
+
+
 
         </aside>
       </div>
@@ -1066,7 +1394,20 @@ function App() {
           </div>
         </div>
 
+        {/* Center Fading Toast Popup (Small Clean White Card) */}
+        {toastMessage && (
+          <div className={`center-toast-popup ${isToastFading ? 'fading-out' : ''}`}>
+            <Sparkles size={14} color="#7C3AED" strokeWidth={2.2} />
+            <span>{toastMessage}</span>
+          </div>
+        )}
+
+
+
+
+
         <main className={`main-panel-container ${
+
           (activeView === 'area' || activeView === 'topic') && activeArea ? `area-view-bg ${activeArea}` : ''
         } ${
           activeView === 'detail' && selectedResource ? `area-view-bg ${selectedResource.area}` : ''
@@ -1142,7 +1483,109 @@ function App() {
                     key={areaKey} 
                     className={`compact-nav-tile ${areaKey}`}
                     onClick={() => handleGoToArea(areaKey)}
+                    style={{ position: 'relative' }}
                   >
+                    {/* Top-Right Three-Dots Options Button */}
+                    <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10 }} onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        title="Area options"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveDropdownKey(prev => prev === `area-${areaKey}` ? null : `area-${areaKey}`);
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          padding: '0.2rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: '4px'
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                      >
+                        <MoreVertical size={16} color="#1A1A1A" strokeWidth={2} />
+                      </button>
+                    </div>
+
+                    {/* Area Options Dropdown Menu */}
+                    {activeDropdownKey === `area-${areaKey}` && (
+                      <div 
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          position: 'absolute',
+                          right: '0px',
+                          top: 'calc(100% + 6px)',
+                          backgroundColor: '#FFFFFF',
+                          border: '2px solid #1A1A1A',
+                          boxShadow: '3px 3px 0px #1A1A1A',
+                          borderRadius: '6px',
+                          padding: '0.35rem 0',
+                          minWidth: '140px',
+                          zIndex: 150
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenameTarget({ type: 'area', name: areaKey });
+                            setActiveDropdownKey(null);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.4rem 0.85rem',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontWeight: 600,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            color: '#1A1A1A'
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F1F5F9')}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                        >
+                          <Pencil size={13} />
+                          <span>Rename</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteConfirmTarget({ type: 'area', name: areaKey });
+                            setActiveDropdownKey(null);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.4rem 0.85rem',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontWeight: 600,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            color: '#DC2626'
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#FEE2E2')}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                        >
+                          <Trash2 size={13} color="#DC2626" />
+                          <span>Delete Folder</span>
+                        </button>
+                      </div>
+                    )}
+
                     <div className="compact-nav-tile-header">
                       {getAreaIcon(areaKey)}
                       <span>{getAreaNameReadable(areaKey)}</span>
@@ -1156,6 +1599,7 @@ function App() {
                     </span>
                   </div>
                 ))}
+
               </div>
             </section>
 
@@ -1238,9 +1682,12 @@ function App() {
                               >
                                 <span style={{ fontSize: '0.8rem' }}>📍</span>
                               </button>
+
+
                               {resource.url && (
                                 <button 
                                   className="recent-file-link-btn"
+                                  title="Open external URL"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     window.open(resource.url, '_blank');
@@ -1339,12 +1786,12 @@ function App() {
                             </span>
 
                             {/* 6. View Button */}
-                            {resource.url && (
+                            {(resource.url || resource.file_path) && (
                               <button 
                                 className="recent-file-link-btn"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  window.open(resource.url, '_blank');
+                                  handleOpenResource(resource);
                                 }}
                               >
                                 <ExternalLink size={12} color="#1A1A1A" strokeWidth={2} />
@@ -1399,10 +1846,14 @@ function App() {
           <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             
             {/* Breadcrumb Back Link */}
-            <button className="detail-back-link" onClick={handleGoHome} style={{ marginBottom: '0.5rem' }}>
-              <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
-              <span>Resource Vault</span>
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <button className="detail-back-link" onClick={handleGoHome} style={{ margin: 0 }}>
+                <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
+                <span>Resource Vault</span>
+              </button>
+            </div>
+
+
 
             {/* Title / Description */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1412,7 +1863,7 @@ function App() {
                   {getAreaNameReadable(activeArea)}
                 </h1>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   {resources.filter(res => res.area === activeArea).length} files
                 </span>
@@ -1439,7 +1890,110 @@ function App() {
                           key={topicName} 
                           className={`subtopic-card ${activeArea}`}
                           onClick={() => handleGoToTopic(topicName, activeArea)}
+                          style={{ position: 'relative' }}
                         >
+                          {/* Top-Right Frameless Three-Dots Options Button */}
+                          <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10 }} onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              title="Subtopic options"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveDropdownKey(prev => prev === `subtopic-${topicName}` ? null : `subtopic-${topicName}`);
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '0.2rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: '4px'
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)')}
+                              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                            >
+                              <MoreVertical size={16} color="#1A1A1A" strokeWidth={2} />
+                            </button>
+                          </div>
+
+                          {/* Subtopic Card Options Dropdown Menu (Positioned cleanly below the folder card) */}
+                          {activeDropdownKey === `subtopic-${topicName}` && (
+                            <div 
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                position: 'absolute',
+                                right: '0px',
+                                top: 'calc(100% + 6px)',
+                                backgroundColor: '#FFFFFF',
+                                border: '2px solid #1A1A1A',
+                                boxShadow: '3px 3px 0px #1A1A1A',
+                                borderRadius: '6px',
+                                padding: '0.35rem 0',
+                                minWidth: '140px',
+                                zIndex: 150
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenameTarget({ type: 'subtopic', name: topicName, area: activeArea });
+                                  setActiveDropdownKey(null);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '0.4rem 0.85rem',
+                                  background: 'none',
+                                  border: 'none',
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 600,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.5rem',
+                                  color: '#1A1A1A'
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F1F5F9')}
+                                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                              >
+                                <Pencil size={13} />
+                                <span>Rename</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteConfirmTarget({ type: 'subtopic', name: topicName, area: activeArea });
+                                  setActiveDropdownKey(null);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '0.4rem 0.85rem',
+                                  background: 'none',
+                                  border: 'none',
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 600,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.5rem',
+                                  color: '#EF4444'
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#FEF2F2')}
+                                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                              >
+                                <Trash2 size={13} color="#EF4444" />
+                                <span>Delete Folder</span>
+                              </button>
+                            </div>
+                          )}
+
+
                           <div className="subtopic-card-folder-icon">
                             <Folder size={20} color="#1A1A1A" strokeWidth={2} />
                           </div>
@@ -1447,7 +2001,9 @@ function App() {
                             <span className="subtopic-card-name">{topicName}</span>
                             <span className="subtopic-card-count">{count} {count === 1 ? 'file' : 'files'}</span>
                           </div>
-                          <ChevronRight size={16} color="#1A1A1A" strokeWidth={2} style={{ marginLeft: 'auto' }} />
+
+                          <ChevronRight size={14} color="#1A1A1A" strokeWidth={2.5} style={{ marginLeft: 'auto', flexShrink: 0 }} />
+
                         </div>
                       );
                     })}
@@ -1530,7 +2086,146 @@ function App() {
           </div>
         )}
 
+        {/* PROFILE VIEW */}
+        {activeView === 'profile' && (
+          <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <button className="detail-back-link" onClick={handleGoHome} style={{ margin: 0 }}>
+                <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
+                <span>Resource Vault</span>
+              </button>
+            </div>
 
+            <div style={{
+              backgroundColor: '#FFFFFF',
+              border: '2px solid #1A1A1A',
+              boxShadow: '4px 4px 0px #1A1A1A',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              maxWidth: '540px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  backgroundColor: '#FEF08A',
+                  border: '2px solid #1A1A1A',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.5rem',
+                  fontWeight: 800,
+                  boxShadow: '2px 2px 0px #1A1A1A'
+                }}>
+                  <User size={28} color="#1A1A1A" />
+                </div>
+                <div>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: '#1A1A1A' }}>User Profile</h2>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Manage your personal details & preferences</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1A1A1A', display: 'block', marginBottom: '0.35rem' }}>Display Name</label>
+                  <input 
+                    type="text" 
+                    defaultValue="Vault User"
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem 0.75rem',
+                      border: '1.5px solid #1A1A1A',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      fontFamily: 'inherit',
+                      boxShadow: '2px 2px 0px #1A1A1A'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1A1A1A', display: 'block', marginBottom: '0.35rem' }}>Email Address</label>
+                  <input 
+                    type="email" 
+                    value="user@resourcevault.app"
+                    readOnly
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem 0.75rem',
+                      border: '1.5px solid #CBD5E1',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: '#F8FAFC',
+                      color: '#64748B'
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+                  <button 
+                    type="button" 
+                    className="btn-action-yellow"
+                    style={{ padding: '0.5rem 1.25rem', fontSize: '0.85rem', fontWeight: 700 }}
+                    onClick={() => alert('Profile details saved!')}
+                  >
+                    Save Profile
+                  </button>
+                  <button 
+                    type="button" 
+                    style={{
+                      padding: '0.5rem 1.25rem',
+                      fontSize: '0.85rem',
+                      fontWeight: 700,
+                      backgroundColor: '#FEE2E2',
+                      color: '#DC2626',
+                      border: '1.5px solid #1A1A1A',
+                      borderRadius: '6px',
+                      boxShadow: '2px 2px 0px #1A1A1A',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => alert('Signed out')}
+
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* RECYCLE BIN VIEW */}
+        {activeView === 'recycle_bin' && (
+          <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <button className="detail-back-link" onClick={handleGoHome} style={{ margin: 0 }}>
+                <ArrowLeft size={14} color="#1A1A1A" strokeWidth={2} style={{ marginRight: '0.2rem' }} />
+                <span>Resource Vault</span>
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span>🗑️</span> Recycle Bin
+                </h1>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Items deleted will be stored here before permanent deletion
+                </span>
+              </div>
+            </div>
+
+            <div className="detail-divider" />
+
+            <div className="quiet-empty-state" style={{ marginTop: '1rem' }}>
+              <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🗑️✨</div>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Recycle Bin is Empty</h3>
+              <p className="empty-state-subtitle">Soft-deleted resources will appear here where you can restore or permanently delete them.</p>
+            </div>
+          </div>
+        )}
 
       </main>
       </div>
@@ -1543,6 +2238,8 @@ function App() {
         onDelete={(id) => handleDeleteResource(id)}
         editingResource={editingResource}
         existingResources={resources}
+        initialArea={activeArea}
+        initialTopic={activeTopicString}
       />
 
       {/* Custom Delete Confirmation Modal */}
@@ -1636,7 +2333,8 @@ function App() {
             <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
               <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
                 <Folder size={18} color="#1A1A1A" strokeWidth={2} />
-                Move {selectedResources.length} resources
+                Move {selectedResources.length} {selectedResources.length === 1 ? 'resource' : 'resources'}
+
               </h3>
               <button 
                 type="button"
@@ -1650,11 +2348,11 @@ function App() {
             <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
-                  Target Area
+                  Target Area *
                 </label>
                 <select
                   value={moveToArea}
-                  onChange={(e) => setMoveToArea(e.target.value as AreaType)}
+                  onChange={(e) => handleMoveAreaChange(e.target.value as AreaType)}
                   style={{
                     width: '100%',
                     padding: '0.45rem 0.75rem',
@@ -1665,7 +2363,6 @@ function App() {
                     backgroundColor: '#FFFFFF'
                   }}
                 >
-                  <option value="" disabled>Select Area</option>
                   <option value="career">Career</option>
                   <option value="computer">Computer</option>
                   <option value="ai_tech">AI & Tech</option>
@@ -1673,27 +2370,57 @@ function App() {
                 </select>
               </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
-                  Subtopic Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="Enter Subtopic name (e.g. Backend Deployment)"
-                  value={moveToSubtopic}
-                  onChange={(e) => setMoveToSubtopic(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.45rem 0.75rem',
-                    border: '2px solid #1A1A1A',
-                    borderRadius: '6px',
-                    fontSize: '0.8rem',
-                    fontFamily: 'inherit',
-                    boxShadow: 'inset 2px 2px 0px rgba(0,0,0,0.08)'
-                  }}
-                />
-              </div>
+              {moveToArea && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
+                    Subtopic / Topic *
+                  </label>
+                  <select
+                    value={moveTopicSelection}
+                    onChange={(e) => setMoveTopicSelection(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '0.45rem 0.75rem',
+                      border: '2px solid #1A1A1A',
+                      borderRadius: '6px',
+                      fontSize: '0.8rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: '#FFFFFF'
+                    }}
+                  >
+                    {getUniqueTopicsListForArea(moveToArea).map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                    <option value="create_new">+ Create New Subtopic...</option>
+                  </select>
+                </div>
+              )}
+
+              {moveTopicSelection === 'create_new' && (
+                <div className="animate-fade">
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem', color: '#1A1A1A' }}>
+                    New Subtopic Name *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Enter Subtopic name (e.g. Backend Deployment)"
+                    value={moveToSubtopic}
+                    onChange={(e) => setMoveToSubtopic(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '0.45rem 0.75rem',
+                      border: '2px solid #1A1A1A',
+                      borderRadius: '6px',
+                      fontSize: '0.8rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: '#FFFFFF',
+                      boxShadow: 'inset 2px 2px 0px rgba(0,0,0,0.05)'
+                    }}
+                  />
+                </div>
+              )}
             </div>
+
             
             <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
               <button 
@@ -1706,7 +2433,7 @@ function App() {
                 type="button"
                 className="btn-ui btn-ui-primary" 
                 onClick={handleConfirmMoveSelected}
-                disabled={!moveToArea || !moveToSubtopic.trim()}
+                disabled={!moveToArea || (moveTopicSelection === 'create_new' ? !moveToSubtopic.trim() : !moveTopicSelection.trim())}
                 style={{
                   backgroundColor: '#7C3AED',
                   color: '#FFFFFF',
@@ -1716,6 +2443,7 @@ function App() {
               >
                 Move
               </button>
+
             </div>
           </div>
         </div>
@@ -1724,115 +2452,72 @@ function App() {
       {isPinModalOpen && pinTargetResourceId && (() => {
         const targetResource = resources.find(r => r.id === pinTargetResourceId);
         if (!targetResource) return null;
-
-        const isHomePinned = homePinnedIds.includes(pinTargetResourceId);
-        const subtopicKey = targetResource.topic;
-        const currentSubtopicPinned = subtopicPinnedMap[subtopicKey] || [];
-        const isSubtopicPinned = currentSubtopicPinned.includes(pinTargetResourceId);
-
-        const handleToggleHomePin = () => {
-          if (isHomePinned) {
-            setHomePinnedIds(prev => prev.filter(id => id !== pinTargetResourceId));
-          } else {
-            if (homePinnedIds.length >= 5) {
-              alert("You can pin up to 5 resources. Unpin an existing resource first.");
-              return;
-            }
-            setHomePinnedIds(prev => [...prev, pinTargetResourceId]);
-          }
-        };
-
-        const handleToggleSubtopicPin = () => {
-          if (isSubtopicPinned) {
-            setSubtopicPinnedMap(prev => ({
-              ...prev,
-              [subtopicKey]: (prev[subtopicKey] || []).filter(id => id !== pinTargetResourceId)
-            }));
-          } else {
-            if (currentSubtopicPinned.length >= 3) {
-              alert(`You can pin up to 3 resources in this subtopic. Unpin an existing resource first.`);
-              return;
-            }
-            setSubtopicPinnedMap(prev => ({
-              ...prev,
-              [subtopicKey]: [...(prev[subtopicKey] || []), pinTargetResourceId]
-            }));
-          }
-        };
-
         return (
-          <div className="modal-overlay-bg animate-fade">
-            <div className="modal-sheet" style={{ maxWidth: '340px' }}>
-              <div className="modal-sheet-header" style={{ borderBottom: 'none', backgroundColor: '#FFFFFF', padding: '1.25rem 1.25rem 0.5rem 1.25rem' }}>
-                <h3 className="modal-sheet-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--border-color)', margin: 0, fontSize: '1.15rem' }}>
-                  <span>📌 Pin Resource</span>
-                </h3>
-                <button 
-                  type="button"
-                  onClick={() => {
-                    setIsPinModalOpen(false);
-                    setPinTargetResourceId(null);
-                  }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                >
-                  <X size={20} color="#1A1A1A" strokeWidth={2} />
-                </button>
-              </div>
-
-              <div style={{ padding: '0 1.5rem 1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
-                  Where do you want to pin this resource?
-                </p>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginTop: '0.25rem' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox"
-                      className="table-checkbox"
-                      checked={isHomePinned}
-                      onChange={handleToggleHomePin}
-                    />
-                    <span>Home (Pinned Section)</span>
-                  </label>
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox"
-                      className="table-checkbox"
-                      checked={isSubtopicPinned}
-                      onChange={handleToggleSubtopicPin}
-                    />
-                    <span>This Subtopic ({subtopicKey})</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="modal-sheet-footer" style={{ borderTop: 'none', backgroundColor: 'transparent', padding: '0 1.5rem 1.5rem 1.5rem' }}>
-                <button 
-                  className="btn-ui btn-ui-primary" 
-                  onClick={() => {
-                    setIsPinModalOpen(false);
-                    setPinTargetResourceId(null);
-                    setSelectedResources([]);
-                  }}
-                  style={{
-                    width: '100%',
-                    backgroundColor: '#7C3AED',
-                    color: '#FFFFFF',
-                    border: '2px solid #1A1A1A',
-                    boxShadow: '2px 2px 0px #1A1A1A'
-                  }}
-                >
-                  Done
-                </button>
-              </div>
-            </div>
-          </div>
+          <PinModal
+            isOpen={isPinModalOpen}
+            onClose={() => {
+              setIsPinModalOpen(false);
+              setPinTargetResourceId(null);
+            }}
+            resourceId={pinTargetResourceId}
+            resourceTitle={targetResource.title}
+            resourceTopic={targetResource.topic}
+            homePinnedIds={homePinnedIds}
+            subtopicPinnedMap={subtopicPinnedMap}
+            onSave={handleSavePinSettings}
+          />
         );
       })()}
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        isOpen={!!previewingResource}
+        onClose={() => setPreviewingResource(null)}
+        resource={previewingResource}
+      />
+
+      {/* Organization Rename Modal */}
+      {renameTarget && (
+        <RenameModal
+          isOpen={!!renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onSave={handleSaveRename}
+          initialName={renameTarget.name}
+          entityType={renameTarget.type}
+          existingNames={
+            renameTarget.type === 'subtopic' && renameTarget.area
+              ? getUniqueTopicsListForArea(renameTarget.area)
+              : ['career', 'computer', 'ai_tech', 'personal']
+          }
+        />
+      )}
+
+      {/* Organization Delete Confirmation Modal */}
+      {deleteConfirmTarget && (
+        <DeleteConfirmationModal
+          isOpen={!!deleteConfirmTarget}
+          onClose={() => setDeleteConfirmTarget(null)}
+          onConfirm={handleSaveDelete}
+          title={deleteConfirmTarget.name}
+          entityType={deleteConfirmTarget.type}
+          fileCount={
+            deleteConfirmTarget.type === 'subtopic' && deleteConfirmTarget.area
+              ? resources.filter(r => r.area === deleteConfirmTarget.area && r.topic === deleteConfirmTarget.name).length
+              : resources.filter(r => r.area === deleteConfirmTarget.name).length
+          }
+          subtopicCount={
+            deleteConfirmTarget.type === 'area'
+              ? getUniqueTopicsListForArea(deleteConfirmTarget.name as AreaType).length
+              : 0
+          }
+        />
+      )}
     </div>
     </>
   );
 }
 
+
 export default App;
+
+
